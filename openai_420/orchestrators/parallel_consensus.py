@@ -18,9 +18,10 @@ import asyncio
 
 import openai
 
-from openai_420.agents import Captain, Specialist
+from openai_420.agents import Captain, Specialist, extract_answer
 from openai_420.roster import CAPTAIN, SPECIALISTS, AgentSpec
 from openai_420.scratchpad import Scratchpad
+from openai_420.trace import log_decision
 
 DEFAULT_MAX_ROUNDS = 3
 
@@ -63,6 +64,7 @@ class ParallelConsensusOrchestrator:
         board = Scratchpad()
 
         for current in range(1, self._max_rounds + 1):
+            log_decision("orchestrator", "round_start", round=current)
             answers = await asyncio.gather(
                 *(s.respond(board, round=current) for s in specialists)
             )
@@ -73,7 +75,10 @@ class ParallelConsensusOrchestrator:
 
             conclusion = await captain.judge(board, round=current)
             if conclusion.consensus:
-                return await captain.answer()
+                log_decision(
+                    "orchestrator", "terminate", reason="consensus", round=current
+                )
+                return extract_answer(answers[await captain.select(list(answers))])
             board.append(
                 round=current,
                 author=captain.name,
@@ -81,4 +86,7 @@ class ParallelConsensusOrchestrator:
                 content=conclusion.direction or "",
             )
 
-        return await captain.answer()
+        log_decision(
+            "orchestrator", "terminate", reason="max_rounds", round=self._max_rounds
+        )
+        return answers[await captain.select(list(answers))]

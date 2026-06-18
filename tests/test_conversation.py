@@ -38,7 +38,10 @@ def test_add_user_message_appends_a_user_turn():
 
     convo.add_user_message("Write the final answer now.")
 
-    assert convo.messages[-1] == {"role": "user", "content": "Write the final answer now."}
+    assert convo.messages[-1] == {
+        "role": "user",
+        "content": "Write the final answer now.",
+    }
 
 
 def test_add_assistant_message_appends_it_verbatim():

@@ -4,8 +4,10 @@ These are laws, ordered by importance. Earlier laws outrank later ones: **a lowe
 may never be satisfied by violating a higher one.** When two pulls conflict, the lower
 number wins. Each law is short on purpose — the simpler it reads, the more load it bears.
 
-Grounded in `grok-420-research.md`. Laws 1–11 are settled. The agent roster (how many
-specialists, their names and roles) and a possible opening decomposition are still under design.
+Grounded in `grok-420-research.md`. The agent roster (how many specialists, their names and
+roles) and a possible opening decomposition are still under design. Laws 8–11 reflect the
+debate redesign that took JA→ZH fix rate from 11% to 37% (see `openai-420-debate-findings`
+memory): the captain detects/locates rather than judges, and selects the answer verbatim.
 
 ---
 
@@ -41,29 +43,39 @@ An agent's own turns are `assistant` messages; everyone else's new entries arriv
 messages carrying scratchpad JSON. Each round injects only the delta since that agent last saw
 the board — never the whole board — so the prefix stays byte-stable and fully cacheable.
 
-## Law 7 — Only the captain speaks to the user
+## Law 7 — Only the captain delivers the final answer
 
-Specialists produce material; the captain produces the answer. The user sees one synthesized
-response, never raw agent chatter.
+Specialists produce material; the captain delivers the answer. The user sees one answer, never
+raw agent chatter. The captain *selects* it (Law 10) — it does not write a new one.
 
-## Law 8 — The captain judges consensus every round through a tool call
+## Law 8 — The captain detects consensus and locates disagreement — never correctness
 
 Each round ends with the captain calling `conclude(consensus, direction?)`; the orchestrator
-branches on that machine-readable flag and never reads prose to decide. Consensus ends the
-debate; `max_rounds` is the backstop.
+branches on that machine-readable flag and never reads prose to decide. The captain is not the
+authority on the answer: it only judges whether the specialists agree and, if not, where —
+because spotting disagreement has a far lower error rate than knowing the right answer, and a
+captain that asserts correctness can override a correct specialist. Consensus ends the debate;
+`max_rounds` is the backstop.
 
-## Law 9 — No consensus must carry a direction
+## Law 9 — No consensus must carry a neutral list of disputed points
 
-When the captain reports no consensus it must supply the direction for the next round; when it
-reports consensus, direction is omitted. The debate never continues blind.
+When the captain reports no consensus, `direction` names the specific points where the
+specialists differ, neutrally — never which side is right. The debate never continues blind,
+and never on the captain's say-so about the answer.
 
-## Law 10 — The final answer is a separate turn, gated by consensus
+## Law 10 — The final answer is selected from a specialist, verbatim — never re-generated
 
-The `conclude` tool never carries the answer. On consensus, its tool result tells the captain
-to answer and only then does a follow-up completion produce it; a no-consensus call gets no
-follow-up completion — the orchestrator just starts the next round.
+On termination the captain picks one specialist's answer by number (majority-biased); the
+orchestrator returns that answer's deliverable verbatim. The captain may select but never
+rewrite, merge, or re-derive — so it cannot corrupt a correct answer or invent a new one.
 
-## Law 11 — Every scratchpad entry has the same shape
+## Law 11 — Specialists exchange reasons, not just answers
+
+Each round a specialist outputs its reasoning first, then a marker, then the deliverable. The
+board therefore carries reasons teammates can weigh — convergence is by the strength of an
+argument, not by counting heads. The user receives only the part after the marker.
+
+## Law 12 — Every scratchpad entry has the same shape
 
 An entry is exactly `{round, author, kind, content}`: `author` is a roster name and `kind` is
 `answer` (a specialist) or `direction` (the captain). The board holds only debate turns — never
@@ -75,7 +87,7 @@ the user query, the roster, or the final answer.
        - Harper   — research / fact-checking / evidence          (placeholder name)
        - Benjamin — logic / math / code / verification           (placeholder name)
        - Lucas    — divergent / contrarian / blind-spot hunting  (placeholder name)
-       - Captain  — judges consensus, gives direction, synthesizes (role-titled)
+       - Captain  — detects consensus, locates disagreement, selects the answer (role-titled)
      Axes are deliberately complementary (reach out / verify in / push back) to maximize
      the diversity that Mixture-of-Agents shows is load-bearing.
 

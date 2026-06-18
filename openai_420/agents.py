@@ -10,23 +10,42 @@ Async only: every agent method is a coroutine function and the injected client M
 
 from __future__ import annotations
 
+import re
+
 import openai
 
 from openai_420.conclude import CONCLUDE_TOOL, Conclusion, parse_conclude
 from openai_420.conversation import Conversation
-from openai_420.roster import AgentSpec, captain_system_prompt, specialist_system_prompt
+from openai_420.roster import (
+    ANSWER_MARKER,
+    AgentSpec,
+    captain_system_prompt,
+    specialist_system_prompt,
+)
 from openai_420.scratchpad import Scratchpad
+from openai_420.trace import log_decision
 
 _CONCLUDE_ACK = "Recorded."
-_ANSWER_INSTRUCTION = (
-    "The debate is complete. Output ONLY the final answer to the user's original "
-    "request — the finished deliverable itself, with no preamble or meta-commentary."
+_SELECT_INSTRUCTION = (
+    "The debate is over. Below are the specialists' final answers, numbered. Choose the "
+    "single best one — prefer the version the majority of specialists agree on. Do NOT "
+    "rewrite, merge, or add anything. Output ONLY the number of your choice."
 )
 _FORCE_CONCLUDE = {"type": "function", "function": {"name": "conclude"}}
 _FALLBACK_DIRECTION = (
     "No clear ruling was produced. Each specialist must give a concrete, complete answer "
     "so consensus can be judged next round."
 )
+
+
+def extract_answer(output: str) -> str:
+    """The deliverable after the last answer marker; the whole output if the marker is
+    absent. Specialists state their reasoning first, then the marker, then the answer, so
+    the board carries reasons teammates can weigh — but the user only gets the answer.
+    """
+    if ANSWER_MARKER in output:
+        return output.rsplit(ANSWER_MARKER, 1)[1].strip()
+    return output.strip()
 
 
 class Specialist:
@@ -57,16 +76,26 @@ class Specialist:
         response = await self._client.chat.completions.create(
             model=self._model, messages=self._conversation.messages
         )
-        content = response.choices[0].message.content or ""
+        message = response.choices[0].message
+        content = message.content or ""
         self._conversation.add_own_turn(content)
         self._last_seen = round - 1
+        log_decision(
+            self.name,
+            "respond",
+            round=round,
+            saw=[e.author for e in delta],
+            output=content,
+            reasoning=_reasoning(message),
+        )
         return content
 
 
 class Captain:
-    """The leader. ``judge`` rules on consensus each round; ``answer`` writes the final
-    reply — both coroutines. The captain acts after the round's specialists, so its cursor
-    advances to the current round (it sees this round's entries), unlike a specialist.
+    """The leader. ``judge`` detects consensus and locates disagreement each round; it does
+    NOT decide correctness. ``select`` picks one specialist's answer to return verbatim —
+    both coroutines. The captain acts after the round's specialists, so its cursor advances
+    to the current round (it sees this round's entries), unlike a specialist.
     """
 
     def __init__(
@@ -103,20 +132,52 @@ class Captain:
         except openai.BadRequestError:
             # The model answered in prose instead of calling the tool. Don't crash the
             # run — keep debating (the conversation is left clean for a retry next round).
+            log_decision(
+                self.name,
+                "judge",
+                round=round,
+                fallback=True,
+                consensus=False,
+                direction=_FALLBACK_DIRECTION,
+            )
             return Conclusion(consensus=False, direction=_FALLBACK_DIRECTION)
         self._conversation.add_assistant_message(message.model_dump(exclude_none=True))
         if message.tool_calls:
             self._conversation.add_tool_result(message.tool_calls[0].id, _CONCLUDE_ACK)
-        return _interpret_conclusion(message)
+        conclusion = _interpret_conclusion(message)
+        log_decision(
+            self.name,
+            "judge",
+            round=round,
+            saw=[e.author for e in delta],
+            consensus=conclusion.consensus,
+            direction=conclusion.direction,
+            reasoning=_reasoning(message),
+            fallback=False,
+        )
+        return conclusion
 
-    async def answer(self) -> str:
-        self._conversation.add_user_message(_ANSWER_INSTRUCTION)
+    async def select(self, candidates: list[str]) -> int:
+        """Choose the best specialist answer by number (0-based) — never rewrite it.
+
+        The captain only selects from existing answers, so it cannot corrupt the text or
+        re-derive a wrong one; the prompt tells it to follow the specialists' majority.
+        """
+        numbered = "\n\n".join(f"[{i + 1}]\n{c}" for i, c in enumerate(candidates))
+        self._conversation.add_user_message(f"{_SELECT_INSTRUCTION}\n\n{numbered}")
         response = await self._client.chat.completions.create(
             model=self._model, messages=self._conversation.messages
         )
-        content = response.choices[0].message.content or ""
-        self._conversation.add_own_turn(content)
-        return content
+        message = response.choices[0].message
+        index = _parse_choice(message.content or "", len(candidates))
+        log_decision(
+            self.name,
+            "select",
+            chosen=index + 1,
+            raw=message.content or "",
+            reasoning=_reasoning(message),
+        )
+        return index
 
 
 def _interpret_conclusion(message: object) -> Conclusion:
@@ -128,6 +189,24 @@ def _interpret_conclusion(message: object) -> Conclusion:
     if not tool_calls:
         return Conclusion(consensus=False, direction=_FALLBACK_DIRECTION)
     return parse_conclude(tool_calls[0].function.arguments)
+
+
+def _parse_choice(content: str, n: int) -> int:
+    """First integer in [1, n] from the captain's reply, as a 0-based index (default 0)."""
+    for token in re.findall(r"\d+", content):
+        value = int(token)
+        if 1 <= value <= n:
+            return value - 1
+    return 0
+
+
+def _reasoning(message: object) -> str:
+    """The model's reasoning text, if the backend exposes one (e.g. gpt-oss)."""
+    return (
+        getattr(message, "reasoning", None)
+        or getattr(message, "reasoning_content", None)
+        or ""
+    )
 
 
 def _require_async_client(client: object) -> None:
