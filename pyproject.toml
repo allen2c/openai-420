@@ -1,0 +1,15 @@
+[project]
+authors = [{ name = "Allen Chou", email = "f1470891079@gmail.com" }]
+dependencies = ["openai"]
+description = "Grok 4.20's inference-time multi-agent chatroom, rebuilt from scratch — specialist agents debate via tool calls, a captain synthesizes."
+license = "Apache-2.0 license"
+name = "openai-420"
+requires-python = ">=3.11,<4"
+version = "0.0.1"
+
+[dependency-groups]
+dev = ["black", "isort", "pytest", "pytest-asyncio", "ruff"]
+
+[build-system]
+build-backend = "poetry.core.masonry.api"
+requires = ["poetry-core>=2.0.0,<3.0.0"]

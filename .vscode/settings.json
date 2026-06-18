@@ -1,0 +1,13 @@
+{
+  "editor.formatOnSave": true,
+  "[toml]": {
+    "editor.tabSize": 2,
+    "editor.defaultFormatter": "tamasfe.even-better-toml"
+  },
+  "evenBetterToml.formatter.reorderKeys": true,
+  "evenBetterToml.formatter.reorderArrays": true,
+  "flake8.args": [
+    "--ignore=D100,D101,D102,D104,D107,D202,D209,E402,E731,W503",
+    "--max-line-length=120"
+  ]
+}
