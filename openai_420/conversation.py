@@ -29,8 +29,11 @@ class Conversation:
     def add_own_turn(self, content: str) -> None:
         self._messages.append({"role": "assistant", "content": content})
 
+    def add_user_message(self, content: str) -> None:
+        self._messages.append({"role": "user", "content": content})
+
     def add_delta(self, entries: list[Entry]) -> None:
-        self._messages.append({"role": "user", "content": render_delta(entries)})
+        self.add_user_message(render_delta(entries))
 
     def add_assistant_message(self, message: dict) -> None:
         self._messages.append(message)

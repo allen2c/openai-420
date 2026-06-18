@@ -33,6 +33,14 @@ def test_add_delta_appends_a_user_turn_with_entries_as_json():
     ]
 
 
+def test_add_user_message_appends_a_user_turn():
+    convo = Conversation(system="SYS", user_query="Q")
+
+    convo.add_user_message("Write the final answer now.")
+
+    assert convo.messages[-1] == {"role": "user", "content": "Write the final answer now."}
+
+
 def test_add_assistant_message_appends_it_verbatim():
     convo = Conversation(system="SYS", user_query="Q")
     message = {

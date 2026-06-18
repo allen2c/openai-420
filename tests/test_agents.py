@@ -1,12 +1,30 @@
+from types import SimpleNamespace
+
 import openai
 import pytest
 
-from openai_420.agents import Captain, Specialist
+from openai_420.agents import Captain, Specialist, _interpret_conclusion
 from openai_420.conclude import Conclusion
 from openai_420.roster import CAPTAIN, SPECIALISTS
 from openai_420.scratchpad import Scratchpad
 
 ROSTER = [*SPECIALISTS, CAPTAIN]
+
+
+def test_interpret_conclusion_defaults_to_continue_when_the_model_skips_the_tool():
+    for message in (None, SimpleNamespace(tool_calls=None), SimpleNamespace(tool_calls=[])):
+        conclusion = _interpret_conclusion(message)
+        assert conclusion.consensus is False
+        assert conclusion.direction  # a non-empty nudge so the debate can continue
+
+
+def test_interpret_conclusion_parses_a_real_tool_call():
+    tool_call = SimpleNamespace(
+        function=SimpleNamespace(arguments='{"consensus": true}')
+    )
+    message = SimpleNamespace(tool_calls=[tool_call])
+
+    assert _interpret_conclusion(message) == Conclusion(consensus=True, direction=None)
 
 
 @pytest.mark.asyncio

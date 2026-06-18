@@ -1,25 +1,33 @@
-from openai_420.roster import CAPTAIN, SPECIALISTS, AgentSpec, system_prompt
+from openai_420.roster import (
+    CAPTAIN,
+    SPECIALISTS,
+    AgentSpec,
+    captain_system_prompt,
+    specialist_system_prompt,
+)
+
+ROSTER = [*SPECIALISTS, CAPTAIN]
 
 
-def test_system_prompt_states_the_agents_own_identity():
+def test_specialist_system_prompt_states_identity_and_full_roster():
     harper = AgentSpec(name="Harper", role="research and fact-checking")
+    benjamin = AgentSpec(name="Benjamin", role="logic and math")
 
-    prompt = system_prompt(harper, roster=[harper])
+    prompt = specialist_system_prompt(harper, roster=[harper, benjamin, CAPTAIN])
 
     assert "Harper" in prompt
     assert "research and fact-checking" in prompt
+    for member in (harper, benjamin, CAPTAIN):
+        assert member.name in prompt
+        assert member.role in prompt
 
 
-def test_system_prompt_lists_every_participant_name_and_role():
-    harper = AgentSpec(name="Harper", role="research")
-    benjamin = AgentSpec(name="Benjamin", role="logic and math")
-    captain = AgentSpec(name="Captain", role="synthesis")
+def test_captain_system_prompt_lists_roster_and_names_the_conclude_tool():
+    prompt = captain_system_prompt(CAPTAIN, roster=ROSTER)
 
-    prompt = system_prompt(harper, roster=[harper, benjamin, captain])
-
-    for spec in (harper, benjamin, captain):
-        assert spec.name in prompt
-        assert spec.role in prompt
+    for member in ROSTER:
+        assert member.name in prompt
+    assert "conclude" in prompt
 
 
 def test_v1_roster_is_three_named_specialists_plus_a_role_titled_captain():

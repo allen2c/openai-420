@@ -14,13 +14,19 @@ import openai
 
 from openai_420.conclude import CONCLUDE_TOOL, Conclusion, parse_conclude
 from openai_420.conversation import Conversation
-from openai_420.roster import AgentSpec
-from openai_420.roster import system_prompt as _system_prompt
+from openai_420.roster import AgentSpec, captain_system_prompt, specialist_system_prompt
 from openai_420.scratchpad import Scratchpad
 
-_CONSENSUS_TOOL_RESULT = "Consensus reached. Now answer the user's question directly."
-_CONTINUE_TOOL_RESULT = "Recorded. The debate continues to the next round."
+_CONCLUDE_ACK = "Recorded."
+_ANSWER_INSTRUCTION = (
+    "The debate is complete. Output ONLY the final answer to the user's original "
+    "request — the finished deliverable itself, with no preamble or meta-commentary."
+)
 _FORCE_CONCLUDE = {"type": "function", "function": {"name": "conclude"}}
+_FALLBACK_DIRECTION = (
+    "No clear ruling was produced. Each specialist must give a concrete, complete answer "
+    "so consensus can be judged next round."
+)
 
 
 class Specialist:
@@ -40,7 +46,7 @@ class Specialist:
         self._client = client
         self._model = model
         self._conversation = Conversation(
-            system=_system_prompt(spec, roster), user_query=user_query
+            system=specialist_system_prompt(spec, roster), user_query=user_query
         )
         self._last_seen = 0
 
@@ -77,7 +83,7 @@ class Captain:
         self._client = client
         self._model = model
         self._conversation = Conversation(
-            system=_system_prompt(spec, roster), user_query=user_query
+            system=captain_system_prompt(spec, roster), user_query=user_query
         )
         self._last_seen = 0
 
@@ -85,30 +91,43 @@ class Captain:
         delta = board.delta(for_author=self.name, since_round=self._last_seen)
         if delta:
             self._conversation.add_delta(delta)
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=self._conversation.messages,
-            tools=[CONCLUDE_TOOL],
-            tool_choice=_FORCE_CONCLUDE,
-        )
-        message = response.choices[0].message
-        self._conversation.add_assistant_message(message.model_dump(exclude_none=True))
-        tool_call = message.tool_calls[0]
-        conclusion = parse_conclude(tool_call.function.arguments)
-        self._conversation.add_tool_result(
-            tool_call.id,
-            _CONSENSUS_TOOL_RESULT if conclusion.consensus else _CONTINUE_TOOL_RESULT,
-        )
         self._last_seen = round
-        return conclusion
+        try:
+            response = await self._client.chat.completions.create(
+                model=self._model,
+                messages=self._conversation.messages,
+                tools=[CONCLUDE_TOOL],
+                tool_choice=_FORCE_CONCLUDE,
+            )
+            message = response.choices[0].message
+        except openai.BadRequestError:
+            # The model answered in prose instead of calling the tool. Don't crash the
+            # run — keep debating (the conversation is left clean for a retry next round).
+            return Conclusion(consensus=False, direction=_FALLBACK_DIRECTION)
+        self._conversation.add_assistant_message(message.model_dump(exclude_none=True))
+        if message.tool_calls:
+            self._conversation.add_tool_result(message.tool_calls[0].id, _CONCLUDE_ACK)
+        return _interpret_conclusion(message)
 
     async def answer(self) -> str:
+        self._conversation.add_user_message(_ANSWER_INSTRUCTION)
         response = await self._client.chat.completions.create(
             model=self._model, messages=self._conversation.messages
         )
         content = response.choices[0].message.content or ""
         self._conversation.add_own_turn(content)
         return content
+
+
+def _interpret_conclusion(message: object) -> Conclusion:
+    """Turn the captain's reply into a Conclusion, tolerating a missing tool call.
+
+    If the model skipped the `conclude` tool (no message, or no tool_calls), default to
+    no-consensus with a nudge so the debate continues instead of crashing."""
+    tool_calls = getattr(message, "tool_calls", None)
+    if not tool_calls:
+        return Conclusion(consensus=False, direction=_FALLBACK_DIRECTION)
+    return parse_conclude(tool_calls[0].function.arguments)
 
 
 def _require_async_client(client: object) -> None:
