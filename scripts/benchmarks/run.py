@@ -93,8 +93,12 @@ def client_from_env() -> tuple[openai.AsyncOpenAI, str, dict]:
     if not model:
         raise SystemExit("OPENAI_MODEL is not set (see .env).")
     base_url = os.environ.get("OPENAI_BASE_URL")
+    # High max_retries so Groq's 250k tokens/min limit (consensus is token-heavy) throttles the
+    # run via backoff instead of killing it — the SDK honors retry-after on each 429.
     client = openai.AsyncOpenAI(
-        base_url=base_url, api_key=os.environ.get("OPENAI_API_KEY")
+        base_url=base_url,
+        api_key=os.environ.get("OPENAI_API_KEY"),
+        max_retries=16,
     )
     return client, model, inference_fingerprint(base_url, model)
 

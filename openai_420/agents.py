@@ -73,9 +73,8 @@ class Specialist:
         delta = board.delta(for_author=self.name, since_round=self._last_seen)
         if delta:
             self._conversation.add_delta(delta)
-        # No temperature/top_p — provider default by design (PRINCIPLES Law 13).
-        response = await self._client.chat.completions.create(
-            model=self._model, messages=self._conversation.messages
+        response = await _complete_text(
+            self._client, self._model, self._conversation.messages
         )
         message = response.choices[0].message
         content = message.content or ""
@@ -166,8 +165,8 @@ class Captain:
         """
         numbered = "\n\n".join(f"[{i + 1}]\n{c}" for i, c in enumerate(candidates))
         self._conversation.add_user_message(f"{_SELECT_INSTRUCTION}\n\n{numbered}")
-        response = await self._client.chat.completions.create(
-            model=self._model, messages=self._conversation.messages
+        response = await _complete_text(
+            self._client, self._model, self._conversation.messages
         )
         message = response.choices[0].message
         index = _parse_choice(message.content or "", len(candidates))
@@ -199,6 +198,27 @@ def _parse_choice(content: str, n: int) -> int:
         if 1 <= value <= n:
             return value - 1
     return 0
+
+
+async def _complete_text(
+    client: openai.AsyncOpenAI, model: str, messages: list, *, attempts: int = 4
+):
+    """A plain (no-tools) completion, retried on a spurious tool call.
+
+    Some backends (Groq's gpt-oss) sporadically emit a built-in tool call (e.g.
+    ``container.exec``) even when the request defines no tools, which the API rejects as
+    ``400 tool_use_failed``. Generation is stochastic (no fixed temperature, Law 13), so a
+    retry simply dodges it; only after ``attempts`` failures does the error propagate. No
+    ``temperature``/``top_p`` is passed — provider default by design (Law 13)."""
+    last: openai.BadRequestError | None = None
+    for _ in range(attempts):
+        try:
+            return await client.chat.completions.create(model=model, messages=messages)
+        except openai.BadRequestError as exc:
+            if "tool_use_failed" not in str(exc):
+                raise
+            last = exc
+    raise last
 
 
 def _reasoning(message: object) -> str:
