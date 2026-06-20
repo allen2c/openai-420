@@ -81,14 +81,17 @@ An entry is exactly `{round, author, kind, content}`: `author` is a roster name 
 `answer` (a specialist) or `direction` (the captain). The board holds only debate turns — never
 the user query, the roster, or the final answer.
 
-## Law 13 — Sampling temperature is never set; use the provider default
+## Law 13 — Inference settings are pinned and recorded, never left to provider defaults
 
-No model call passes `temperature` (or `top_p`) — every request inherits whatever the serving
-backend defaults to. Diversity is engineered through epistemology (different specialist
-standards, Law 11), not through a sampling knob, so there is nothing to tune here. Pinning a
-value would couple results to a parameter that behaves differently across backends and mask the
-model's native behavior; leaving it unset keeps each agent's output native to whatever model
-serves it. This holds for specialists, the captain, and any eval/judge call alike.
+Every run fixes its decoding/reasoning parameters — `temperature`, `reasoning_effort`,
+`max_completion_tokens` — from the environment, passes the SAME values to every model call
+(specialists, captain, single baseline), and records them in the run's inference fingerprint.
+Provider defaults differ across backends and drift over time, so leaving a knob unset makes
+scores non-reproducible and cross-provider comparison invalid — an early probe found the same
+model on the same questions swinging from 65% to 96% on `reasoning_effort` alone. Diversity
+still comes from epistemology (Law 11), not sampling, so the chosen `temperature` is free — but
+it must be fixed and logged, not inherited. Whatever a comparison varies, these settings are
+held equal across its arms.
 
 ---
 

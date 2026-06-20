@@ -35,12 +35,14 @@ class ParallelConsensusOrchestrator:
         specialist_specs: list[AgentSpec] = SPECIALISTS,
         captain_spec: AgentSpec = CAPTAIN,
         max_rounds: int = DEFAULT_MAX_ROUNDS,
+        gen_params: dict | None = None,
     ) -> None:
         self._client = client
         self._model = model
         self._specialist_specs = specialist_specs
         self._captain_spec = captain_spec
         self._max_rounds = max_rounds
+        self._gen_params = gen_params or {}
 
     async def run(self, user_query: str) -> str:
         roster = [*self._specialist_specs, self._captain_spec]
@@ -51,6 +53,7 @@ class ParallelConsensusOrchestrator:
                 client=self._client,
                 model=self._model,
                 user_query=user_query,
+                gen_params=self._gen_params,
             )
             for spec in self._specialist_specs
         ]
@@ -60,6 +63,7 @@ class ParallelConsensusOrchestrator:
             client=self._client,
             model=self._model,
             user_query=user_query,
+            gen_params=self._gen_params,
         )
         board = Scratchpad()
 

@@ -100,14 +100,28 @@ def client_from_env() -> tuple[openai.AsyncOpenAI, str, dict]:
         api_key=os.environ.get("OPENAI_API_KEY"),
         max_retries=16,
     )
-    return client, model, inference_fingerprint(base_url, model)
+    return client, model, inference_fingerprint(base_url, model, gen_params_from_env())
 
 
-def inference_fingerprint(base_url: str | None, model: str) -> dict:
-    """Who actually served the tokens — so an Ollama score is never compared to a Groq one.
+def gen_params_from_env() -> dict:
+    """Pinned inference settings (PRINCIPLES Law 13), read from the environment. Only keys that
+    are set are returned, so an unset var falls back to the SDK omitting it (not a hardcoded
+    default). Passed verbatim to every model call and recorded in the fingerprint."""
+    params: dict = {}
+    if (t := os.environ.get("OPENAI_TEMPERATURE")) not in (None, ""):
+        params["temperature"] = float(t)
+    if (e := os.environ.get("OPENAI_REASONING_EFFORT")) not in (None, ""):
+        params["reasoning_effort"] = e
+    if (m := os.environ.get("OPENAI_MAX_COMPLETION_TOKENS")) not in (None, ""):
+        params["max_completion_tokens"] = int(m)
+    return params
 
-    The same model id (``gpt-oss-20b``) served by local Ollama (MXFP4) vs Groq is a different
-    quantization and serving stack, so it can score differently; the provider tag pins it.
+
+def inference_fingerprint(base_url: str | None, model: str, params: dict) -> dict:
+    """Who served the tokens AND how — so an Ollama score is never compared to a Groq one, and
+    a low-effort run is never compared to a high-effort one. The same model id served by local
+    Ollama (MXFP4) vs Groq is a different stack, and reasoning_effort alone swings scores hugely
+    (Law 13), so both the provider and the pinned ``params`` are recorded.
     """
     host = urlparse(base_url).netloc if base_url else ""
     provider = (
@@ -119,30 +133,43 @@ def inference_fingerprint(base_url: str | None, model: str) -> dict:
             else "openai" if ("openai.com" in host or not host) else host or "unknown"
         )
     )
-    return {"provider": provider, "endpoint": host or "api.openai.com", "model": model}
+    return {
+        "provider": provider,
+        "endpoint": host or "api.openai.com",
+        "model": model,
+        "params": params,
+    }
 
 
-async def answer_single(client: openai.AsyncOpenAI, model: str, sample: dict) -> str:
+async def answer_single(
+    client: openai.AsyncOpenAI, model: str, sample: dict, gen_params: dict
+) -> str:
     prompt = sample["question"] + _FORMAT_INSTRUCTION[sample["grading"]]
-    # No temperature/top_p — provider default by design (PRINCIPLES Law 13).
     response = await client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": _SINGLE_SYSTEM},
             {"role": "user", "content": prompt},
         ],
+        **gen_params,
     )
     return response.choices[0].message.content or ""
 
 
 async def answer_consensus(
-    client: openai.AsyncOpenAI, model: str, sample: dict, group: str, rounds: int
+    client: openai.AsyncOpenAI,
+    model: str,
+    sample: dict,
+    group: str,
+    rounds: int,
+    gen_params: dict,
 ) -> str:
     orchestrator = ParallelConsensusOrchestrator(
         client=client,
         model=model,
         specialist_specs=GROUPS[group],
         max_rounds=rounds,
+        gen_params=gen_params,
     )
     return await orchestrator.run(
         sample["question"] + _FORMAT_INSTRUCTION[sample["grading"]]
@@ -154,12 +181,13 @@ async def evaluate(args: argparse.Namespace) -> int:
     pool = load_samples(args.benchmark)
     samples = select_samples(pool, args.limit, args.sample, args.seed)
     client, model, inference = client_from_env()
+    gen_params = inference["params"]
     judge_model = args.judge_model or model
     label = args.system + (
         f"/{args.group}" if args.system == "parallel_consensus" else ""
     )
     LOG.info(
-        "%s on %s: %d/%d questions (%s, seed=%d), %d repeat(s), concurrency=%d, %s/%s",
+        "%s on %s: %d/%d questions (%s, seed=%d), %d repeat(s), concurrency=%d, %s/%s %s",
         label,
         args.benchmark,
         len(samples),
@@ -170,15 +198,16 @@ async def evaluate(args: argparse.Namespace) -> int:
         args.concurrency,
         inference["provider"],
         model,
+        gen_params or "(provider defaults)",
     )
 
     async def one(sample: dict, semaphore: asyncio.Semaphore) -> dict:
         async with semaphore:
             if args.system == "single":
-                prediction = await answer_single(client, model, sample)
+                prediction = await answer_single(client, model, sample, gen_params)
             else:
                 prediction = await answer_consensus(
-                    client, model, sample, args.group, args.max_rounds
+                    client, model, sample, args.group, args.max_rounds, gen_params
                 )
             if sample["grading"] == "judge":
                 verdict = await scoring.grade_judge(

@@ -59,11 +59,13 @@ class Specialist:
         client: openai.AsyncOpenAI,
         model: str,
         user_query: str,
+        gen_params: dict | None = None,
     ) -> None:
         _require_async_client(client)
         self.name = spec.name
         self._client = client
         self._model = model
+        self._gen_params = gen_params or {}
         self._conversation = Conversation(
             system=specialist_system_prompt(spec, roster), user_query=user_query
         )
@@ -74,7 +76,7 @@ class Specialist:
         if delta:
             self._conversation.add_delta(delta)
         response = await _complete_text(
-            self._client, self._model, self._conversation.messages
+            self._client, self._model, self._conversation.messages, **self._gen_params
         )
         message = response.choices[0].message
         content = message.content or ""
@@ -106,11 +108,13 @@ class Captain:
         client: openai.AsyncOpenAI,
         model: str,
         user_query: str,
+        gen_params: dict | None = None,
     ) -> None:
         _require_async_client(client)
         self.name = spec.name
         self._client = client
         self._model = model
+        self._gen_params = gen_params or {}
         self._conversation = Conversation(
             system=captain_system_prompt(spec, roster), user_query=user_query
         )
@@ -127,6 +131,7 @@ class Captain:
                 messages=self._conversation.messages,
                 tools=[CONCLUDE_TOOL],
                 tool_choice=_FORCE_CONCLUDE,
+                **self._gen_params,
             )
             message = response.choices[0].message
         except openai.BadRequestError:
@@ -166,7 +171,7 @@ class Captain:
         numbered = "\n\n".join(f"[{i + 1}]\n{c}" for i, c in enumerate(candidates))
         self._conversation.add_user_message(f"{_SELECT_INSTRUCTION}\n\n{numbered}")
         response = await _complete_text(
-            self._client, self._model, self._conversation.messages
+            self._client, self._model, self._conversation.messages, **self._gen_params
         )
         message = response.choices[0].message
         index = _parse_choice(message.content or "", len(candidates))
@@ -201,19 +206,26 @@ def _parse_choice(content: str, n: int) -> int:
 
 
 async def _complete_text(
-    client: openai.AsyncOpenAI, model: str, messages: list, *, attempts: int = 4
+    client: openai.AsyncOpenAI,
+    model: str,
+    messages: list,
+    *,
+    attempts: int = 4,
+    **params,
 ):
     """A plain (no-tools) completion, retried on a spurious tool call.
 
-    Some backends (Groq's gpt-oss) sporadically emit a built-in tool call (e.g.
-    ``container.exec``) even when the request defines no tools, which the API rejects as
-    ``400 tool_use_failed``. Generation is stochastic (no fixed temperature, Law 13), so a
-    retry simply dodges it; only after ``attempts`` failures does the error propagate. No
-    ``temperature``/``top_p`` is passed — provider default by design (Law 13)."""
+    ``params`` are the pinned inference settings (temperature/reasoning_effort/
+    max_completion_tokens, Law 13), forwarded to every call. Some backends (Groq's gpt-oss)
+    sporadically emit a built-in tool call (e.g. ``container.exec``) even when the request
+    defines no tools, which the API rejects as ``400 tool_use_failed``; generation is stochastic,
+    so a retry dodges it. Only after ``attempts`` failures does the error propagate."""
     last: openai.BadRequestError | None = None
     for _ in range(attempts):
         try:
-            return await client.chat.completions.create(model=model, messages=messages)
+            return await client.chat.completions.create(
+                model=model, messages=messages, **params
+            )
         except openai.BadRequestError as exc:
             if "tool_use_failed" not in str(exc):
                 raise
