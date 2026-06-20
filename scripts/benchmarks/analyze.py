@@ -99,7 +99,7 @@ def _report(result: dict, alpha: float) -> None:
         else f"not significant (p={p:.4f} ≥ {alpha}): {c} fixed vs {b} broke could be chance."
     )
     print(f"\n  {verdict}")
-    if b + c < 10:
+    if p >= alpha and b + c < 10:
         print(
             f"  [!] only {b + c} discordant pairs — underpowered; raise n for a real verdict."
         )

@@ -70,9 +70,8 @@ def main(argv: list[str] | None = None) -> int:
         except GatedDatasetError as exc:
             failures += 1
             LOG.warning("%s: SKIPPED — %s", name, exc)
-        except (
-            Exception
-        ) as exc:  # one bad source must not abort the others or dump a traceback
+        # One bad source must not abort the others or dump a traceback.
+        except Exception as exc:
             failures += 1
             LOG.warning("%s: FAILED — %s", name, exc)
     return 1 if failures else 0
