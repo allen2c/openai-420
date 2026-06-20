@@ -8,8 +8,23 @@ requires-python = ">=3.11,<4"
 version = "0.0.1"
 
 [dependency-groups]
-dev = ["black", "isort", "pytest", "pytest-asyncio", "ruff", "tqdm"]
+dev = [
+  "black",
+  "isort",
+  "math-verify",
+  "matplotlib",
+  "pytest",
+  "pytest-asyncio",
+  "pyyaml",
+  "requests",
+  "ruff",
+  "sympy",
+  "tqdm",
+]
 
 [build-system]
 build-backend = "poetry.core.masonry.api"
 requires = ["poetry-core>=2.0.0,<3.0.0"]
+
+[tool.isort]
+profile = "black"  # keep isort and black from fighting over import wrapping

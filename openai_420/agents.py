@@ -73,6 +73,7 @@ class Specialist:
         delta = board.delta(for_author=self.name, since_round=self._last_seen)
         if delta:
             self._conversation.add_delta(delta)
+        # No temperature/top_p — provider default by design (PRINCIPLES Law 13).
         response = await self._client.chat.completions.create(
             model=self._model, messages=self._conversation.messages
         )

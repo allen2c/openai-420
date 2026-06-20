@@ -81,6 +81,15 @@ An entry is exactly `{round, author, kind, content}`: `author` is a roster name 
 `answer` (a specialist) or `direction` (the captain). The board holds only debate turns — never
 the user query, the roster, or the final answer.
 
+## Law 13 — Sampling temperature is never set; use the provider default
+
+No model call passes `temperature` (or `top_p`) — every request inherits whatever the serving
+backend defaults to. Diversity is engineered through epistemology (different specialist
+standards, Law 11), not through a sampling knob, so there is nothing to tune here. Pinning a
+value would couple results to a parameter that behaves differently across backends and mask the
+model's native behavior; leaving it unset keeps each agent's output native to whatever model
+serves it. This holds for specialists, the captain, and any eval/judge call alike.
+
 ---
 
 <!-- v1 roster (settled, tunable — config, not law): 3 specialists + 1 captain.

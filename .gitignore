@@ -2,6 +2,11 @@
 tmp*
 experiments/
 
+# Downloaded benchmark datasets (baselines.yaml stays tracked — it's .yaml, not matched)
+/data/*.jsonl
+# Per-run result files (semi-automatic phase, not committed yet)
+/data/results/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
