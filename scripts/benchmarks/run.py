@@ -110,6 +110,8 @@ def gen_params_from_env() -> dict:
     params: dict = {}
     if (t := os.environ.get("OPENAI_TEMPERATURE")) not in (None, ""):
         params["temperature"] = float(t)
+    if (p := os.environ.get("OPENAI_TOP_P")) not in (None, ""):
+        params["top_p"] = float(p)
     if (e := os.environ.get("OPENAI_REASONING_EFFORT")) not in (None, ""):
         params["reasoning_effort"] = e
     if (m := os.environ.get("OPENAI_MAX_COMPLETION_TOKENS")) not in (None, ""):
