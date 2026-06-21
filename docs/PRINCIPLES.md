@@ -88,10 +88,13 @@ Every run fixes its decoding/reasoning parameters — `temperature`, `reasoning_
 (specialists, captain, single baseline), and records them in the run's inference fingerprint.
 Provider defaults differ across backends and drift over time, so leaving a knob unset makes
 scores non-reproducible and cross-provider comparison invalid — an early probe found the same
-model on the same questions swinging from 65% to 96% on `reasoning_effort` alone. Diversity
-still comes from epistemology (Law 11), not sampling, so the chosen `temperature` is free — but
-it must be fixed and logged, not inherited. Whatever a comparison varies, these settings are
-held equal across its arms.
+model on the same questions swinging from 65% to 96% on `reasoning_effort` alone.
+
+`temperature` is set to the value the MODEL'S publisher officially recommends (its model card /
+library page), not an arbitrary house value — this is the most portable, defensible standard
+across models (e.g. mistral-small3.2 → 0.15). Diversity comes from epistemology (Law 11), not
+sampling, so a low recommended temperature does not hurt the debate; it only makes runs more
+reproducible. Whatever a comparison varies, these settings are held equal across its arms.
 
 ---
 

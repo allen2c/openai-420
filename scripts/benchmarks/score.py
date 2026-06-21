@@ -73,7 +73,11 @@ def grade_math(prediction: str, gold: str) -> bool:
     miss, not a crash."""
     try:
         gold_latex = f"${_CURRENCY.sub('', gold).strip()}$"
-        return bool(verify(parse(gold_latex), parse(_CURRENCY.sub("", prediction))))
+        pred = _CURRENCY.sub("", prediction).strip().strip("`").strip()
+        # A bare answer (no \boxed, e.g. a chat-style `(3, π/2)`) won't extract; wrap it as
+        # LaTeX as a fallback, the same way the gold is parsed.
+        pred_parsed = parse(pred) or parse(f"${pred}$")
+        return bool(verify(parse(gold_latex), pred_parsed))
     except Exception:
         return False
 
