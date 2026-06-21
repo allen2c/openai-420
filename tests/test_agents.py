@@ -11,7 +11,7 @@ from openai_420.agents import (
     extract_answer,
 )
 from openai_420.conclude import Conclusion
-from openai_420.roster import CAPTAIN, SPECIALISTS
+from openai_420.roster import ANSWER_MARKER, CAPTAIN, SPECIALISTS
 from openai_420.scratchpad import Scratchpad
 
 ROSTER = [*SPECIALISTS, CAPTAIN]
@@ -85,7 +85,7 @@ async def test_captain_judge_returns_a_conclusion(
 
 
 def test_extract_answer_takes_text_after_the_marker():
-    output = "Here is my reasoning.\nIt is sound.\n---ANSWER---\nthe deliverable"
+    output = f"Here is my reasoning.\nIt is sound.\n{ANSWER_MARKER}\nthe deliverable"
     assert extract_answer(output) == "the deliverable"
 
 

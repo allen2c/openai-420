@@ -19,7 +19,9 @@ class AgentSpec:
     disposition: str = ""
 
 
-ANSWER_MARKER = "---ANSWER---"
+# Not `---ANSWER---`: models (e.g. mistral) render a leading `---` as a markdown horizontal
+# rule and split the marker across lines, breaking extraction. Double brackets are inert.
+ANSWER_MARKER = "[[ANSWER]]"
 
 # ── The 12 epistemology agents (distilled in docs/epistemology-research.md) ──────────────
 EVIDENTIALIST = AgentSpec(
@@ -187,22 +189,29 @@ SPECIALISTS: list[AgentSpec] = GROUPS["roles"]  # default team
 
 def specialist_system_prompt(spec: AgentSpec, roster: list[AgentSpec]) -> str:
     return (
-        f"You are {spec.name}, one of several specialists collaborating to answer a "
-        f"user's request. Each teammate judges answers by a different standard; yours is:\n\n"
-        f"{spec.disposition or spec.role}\n\n"
+        f"You are {spec.name}, in a small group chat where teammates work out the answer to a "
+        f"user's request together. Each teammate weighs answers by a different standard; "
+        f"yours is:\n\n{spec.disposition or spec.role}\n\n"
         f"The team:\n{_roster_block(roster)}\n\n"
-        "How you work:\n"
-        "- The user's request is the first message. Each later round you are shown your "
-        "teammates' latest answers AND their reasoning, plus the captain's notes on where "
-        "you disagree, as JSON.\n"
-        "- Later rounds: focus on the disputed points. Read your teammates' REASONING and "
-        "weigh it against yours BY YOUR OWN STANDARD — adopt theirs if it is better "
-        "justified; keep yours only if you can defend it. Converge on the best-justified "
-        "answer, not the majority one.\n"
-        "- Output format EVERY round: first lay out your reasoning clearly and completely "
-        f"(so teammates can weigh it), then a line containing exactly `{ANSWER_MARKER}`, "
-        "then the finished deliverable itself in the language and format the user "
-        "requested — and nothing after it."
+        "How the chat works:\n"
+        "- The user's request is the first message. Each later round you see your teammates' "
+        "latest messages AND their reasoning, plus the captain's note on where you disagree, "
+        "as JSON.\n"
+        "- Talk like a sharp colleague in a group chat, not a report writer: say what you "
+        "think and WHY, showing the reasoning that actually matters — and engage teammates "
+        "directly by name, agreeing and building or pushing back where you think they slipped. "
+        "Aim for a focused chat message (a short paragraph or two): enough to make your case, "
+        "never a full write-up, never a bare one-liner.\n"
+        "- Work the WHOLE problem yourself and commit to your own complete answer EVERY round. "
+        "The chat is to compare and stress-test answers — never to split the work, hand a step "
+        "to a teammate, or defer it to 'next round.' If you ask a teammate to check something, "
+        "still do it yourself and state your result now.\n"
+        "- Weigh teammates' reasoning against yours BY YOUR OWN STANDARD: adopt theirs if it is "
+        "better justified, defend yours if you can. In later rounds zero in on the disputed "
+        "points. Converge on the best-argued answer, not the majority one.\n"
+        f"- End EVERY message with a line containing exactly `{ANSWER_MARKER}`, then your "
+        "current answer in the language and format the user asked for, and nothing after it. "
+        "Your discussion goes ABOVE that line; only the deliverable goes below it."
     )
 
 
