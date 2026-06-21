@@ -40,6 +40,7 @@ from tqdm import tqdm
 
 from openai_420.orchestrators.parallel_consensus import ParallelConsensusOrchestrator
 from openai_420.roster import GROUPS
+from openai_420.trace import warn_if_truncated
 from scripts.benchmarks import score as scoring
 from scripts.benchmarks.logs import LOG, configure
 from scripts.benchmarks.paths import RESULTS_DIR, dataset_path
@@ -155,6 +156,7 @@ async def answer_single(
         ],
         **gen_params,
     )
+    warn_if_truncated(response, sample["id"], "single")
     return response.choices[0].message.content or ""
 
 

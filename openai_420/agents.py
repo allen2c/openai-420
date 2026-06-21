@@ -23,7 +23,7 @@ from openai_420.roster import (
     specialist_system_prompt,
 )
 from openai_420.scratchpad import Scratchpad
-from openai_420.trace import log_decision
+from openai_420.trace import log_decision, warn_if_truncated
 
 _CONCLUDE_ACK = "Recorded."
 _SELECT_INSTRUCTION = (
@@ -78,6 +78,7 @@ class Specialist:
         response = await _complete_text(
             self._client, self._model, self._conversation.messages, **self._gen_params
         )
+        warn_if_truncated(response, self.name, "respond")
         message = response.choices[0].message
         content = message.content or ""
         self._conversation.add_own_turn(content)
@@ -146,6 +147,7 @@ class Captain:
                 direction=_FALLBACK_DIRECTION,
             )
             return Conclusion(consensus=False, direction=_FALLBACK_DIRECTION)
+        warn_if_truncated(response, self.name, "judge")
         self._conversation.add_assistant_message(message.model_dump(exclude_none=True))
         if message.tool_calls:
             self._conversation.add_tool_result(message.tool_calls[0].id, _CONCLUDE_ACK)
@@ -173,6 +175,7 @@ class Captain:
         response = await _complete_text(
             self._client, self._model, self._conversation.messages, **self._gen_params
         )
+        warn_if_truncated(response, self.name, "select")
         message = response.choices[0].message
         index = _parse_choice(message.content or "", len(candidates))
         log_decision(
