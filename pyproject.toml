@@ -5,7 +5,7 @@ description = "Grok 4.20's inference-time multi-agent chatroom, rebuilt from scr
 license = "Apache-2.0 license"
 name = "openai-420"
 requires-python = ">=3.11,<4"
-version = "0.0.1"
+version = "0.0.2"
 
 [dependency-groups]
 dev = [
@@ -27,4 +27,4 @@ build-backend = "poetry.core.masonry.api"
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 
 [tool.isort]
-profile = "black"  # keep isort and black from fighting over import wrapping
+profile = "black" # keep isort and black from fighting over import wrapping
