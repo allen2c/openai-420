@@ -19,14 +19,35 @@ import asyncio
 import openai
 
 from openai_420.agents import Captain, Specialist, extract_answer
-from openai_420.roster import CAPTAIN, SPECIALISTS, AgentSpec
+from openai_420.orchestrators.base import Orchestrator, register
+from openai_420.roster import CAPTAIN, GROUPS, SPECIALISTS, AgentSpec
 from openai_420.scratchpad import Scratchpad
 from openai_420.trace import log_decision
 
 DEFAULT_MAX_ROUNDS = 3
 
 
-class ParallelConsensusOrchestrator:
+@register("parallel_consensus")
+class ParallelConsensusOrchestrator(Orchestrator):
+    @classmethod
+    def from_args(
+        cls,
+        *,
+        client: openai.AsyncOpenAI,
+        model: str,
+        gen_params: dict,
+        group: str = "A",
+        max_rounds: int = DEFAULT_MAX_ROUNDS,
+        **options,
+    ) -> "ParallelConsensusOrchestrator":
+        return cls(
+            client=client,
+            model=model,
+            specialist_specs=GROUPS[group],
+            max_rounds=max_rounds,
+            gen_params=gen_params,
+        )
+
     def __init__(
         self,
         *,
@@ -93,4 +114,4 @@ class ParallelConsensusOrchestrator:
         log_decision(
             "orchestrator", "terminate", reason="max_rounds", round=self._max_rounds
         )
-        return answers[await captain.select(list(answers))]
+        return extract_answer(answers[await captain.select(list(answers))])

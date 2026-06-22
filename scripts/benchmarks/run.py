@@ -38,9 +38,8 @@ from urllib.parse import urlparse
 import openai
 from tqdm import tqdm
 
-from openai_420.orchestrators.parallel_consensus import ParallelConsensusOrchestrator
+from openai_420 import orchestrators
 from openai_420.roster import GROUPS
-from openai_420.trace import warn_if_truncated
 from scripts.benchmarks import score as scoring
 from scripts.benchmarks.logs import LOG, configure
 from scripts.benchmarks.paths import RESULTS_DIR, dataset_path
@@ -50,7 +49,6 @@ _FORMAT_INSTRUCTION = {
     "mc": "\n\nThink it through, then end with `Answer: <letter>` (one of A, B, C, D).",
     "judge": "\n\nAnswer truthfully and concisely.",
 }
-_SINGLE_SYSTEM = "You are a careful expert. Answer the user's question."
 
 
 def load_samples(benchmark: str) -> list[dict]:
@@ -144,42 +142,6 @@ def inference_fingerprint(base_url: str | None, model: str, params: dict) -> dic
     }
 
 
-async def answer_single(
-    client: openai.AsyncOpenAI, model: str, sample: dict, gen_params: dict
-) -> str:
-    prompt = sample["question"] + _FORMAT_INSTRUCTION[sample["grading"]]
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": _SINGLE_SYSTEM},
-            {"role": "user", "content": prompt},
-        ],
-        **gen_params,
-    )
-    warn_if_truncated(response, sample["id"], "single")
-    return response.choices[0].message.content or ""
-
-
-async def answer_consensus(
-    client: openai.AsyncOpenAI,
-    model: str,
-    sample: dict,
-    group: str,
-    rounds: int,
-    gen_params: dict,
-) -> str:
-    orchestrator = ParallelConsensusOrchestrator(
-        client=client,
-        model=model,
-        specialist_specs=GROUPS[group],
-        max_rounds=rounds,
-        gen_params=gen_params,
-    )
-    return await orchestrator.run(
-        sample["question"] + _FORMAT_INSTRUCTION[sample["grading"]]
-    )
-
-
 async def evaluate(args: argparse.Namespace) -> int:
     configure(verbose=args.verbose)
     pool = load_samples(args.benchmark)
@@ -205,14 +167,20 @@ async def evaluate(args: argparse.Namespace) -> int:
         gen_params or "(provider defaults)",
     )
 
+    # One stateless orchestrator instance, reused across all concurrent questions: its run()
+    # is self-contained (it builds fresh agents and a fresh board per query).
+    system = orchestrators.get(args.system).from_args(
+        client=client,
+        model=model,
+        gen_params=gen_params,
+        group=args.group,
+        max_rounds=args.max_rounds,
+    )
+
     async def one(sample: dict, semaphore: asyncio.Semaphore) -> dict:
         async with semaphore:
-            if args.system == "single":
-                prediction = await answer_single(client, model, sample, gen_params)
-            else:
-                prediction = await answer_consensus(
-                    client, model, sample, args.group, args.max_rounds, gen_params
-                )
+            prompt = sample["question"] + _FORMAT_INSTRUCTION[sample["grading"]]
+            prediction = await system.run(prompt)
             if sample["grading"] == "judge" and args.defer_judge:
                 meta = sample["meta"]
                 return {
@@ -277,9 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--benchmark", required=True, choices=["math500", "gpqa_diamond", "truthfulqa"]
     )
-    parser.add_argument(
-        "--system", default="single", choices=["single", "parallel_consensus"]
-    )
+    parser.add_argument("--system", default="single", choices=orchestrators.names())
     parser.add_argument(
         "--group",
         default="A",

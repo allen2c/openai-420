@@ -21,6 +21,12 @@ records it in the scratchpad.
 It owns state, scheduling, and the round loop, but never builds a prompt, calls a model, or
 judges content. Every decision that requires reading meaning belongs to an agent.
 
+Every orchestrator implements one contract — `async run(user_query) -> str`, the answer with
+reasoning stripped — behind the abstract `Orchestrator` base (`orchestrators/base.py`). Variants
+register by mechanism name and the harness dispatches by name, so a new system is a new class,
+never a new branch. The single-call baseline implements the same contract, so baseline and
+framework differ only in orchestration.
+
 ## Law 3 — Specialists run in parallel, never in sequence
 
 Every specialist in a round is dispatched at once and awaited together. Sequencing them is a

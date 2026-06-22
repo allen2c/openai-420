@@ -33,9 +33,26 @@ an earlier one). The load-bearing ones:
 Modules: `scratchpad.py` (the board) · `roster.py` (agents + system prompts + `GROUPS`) ·
 `conversation.py` (per-agent cached history) · `conclude.py` (captain's control tool) ·
 `agents.py` (Specialist/Captain — the only LLM callers, async-only) ·
-`orchestrators/parallel_consensus.py` (the v1 loop) · `trace.py` (decision logging).
+`orchestrators/` (the systems — see below) · `trace.py` (decision logging).
 
-Orchestrator variants are kept forever and named by mechanism (never a bare `Orchestrator`).
+### Orchestrators — abstract base + registry
+
+`orchestrators/base.py` defines the contract every system implements: `async run(user_query)
+-> str`, returning the final deliverable with reasoning stripped (the `single` baseline lives
+here too, as `SingleOrchestrator`). Variants are **kept forever and named by mechanism** (never
+a bare `Orchestrator`): `parallel_consensus` (the v1 loop), `single` (the baseline).
+
+Adding one is "write the class, register it" — no harness branch per system:
+
+1. Subclass `Orchestrator`, implement `run`, decorate with `@register("<mechanism_name>")`.
+2. Override `from_args(*, client, model, gen_params, **options)` if you need harness knobs
+   (e.g. `group`, `max_rounds`); the default uses only the shared three. Read what you need
+   from `options` so the library never depends on the CLI's arg shape.
+3. Import the module in `orchestrators/__init__.py` so it registers on package load.
+
+`scripts/benchmarks/run.py` dispatches by name: `--system` choices come from
+`orchestrators.names()`, and it builds one stateless instance via `from_args` (reused across
+all concurrent questions — `run()` builds fresh agents and a fresh board per query).
 
 ## Diversity = epistemology, not persona
 
