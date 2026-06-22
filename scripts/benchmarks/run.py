@@ -44,6 +44,7 @@ import openai
 from tqdm import tqdm
 
 from openai_420 import orchestrators
+from openai_420.providers import mask_secrets, providers_from_env
 from openai_420.ratelimit import ThrottledClient, governor_from_env
 from openai_420.roster import GROUPS
 from scripts.benchmarks import score as scoring
@@ -171,6 +172,11 @@ async def evaluate(args: argparse.Namespace) -> int:
     client, model, inference = client_from_env()
     gen_params = inference["params"]
     judge_model = args.judge_model or model
+    # Heterogeneous systems read their per-agent roster from OPENAI_PROVIDERS; record the masked
+    # string (api_key redacted) as the whole reproducible provenance.
+    providers = providers_from_env(os.environ.get)
+    if providers:
+        inference["providers"] = mask_secrets(os.environ["OPENAI_PROVIDERS"])
     label = args.system + (f"/{args.group}" if _uses_roster(args.system) else "")
     LOG.info(
         "%s on %s: %d/%d questions (%s, seed=%d), %d repeat(s), concurrency=%d, %s/%s %s",
@@ -196,6 +202,7 @@ async def evaluate(args: argparse.Namespace) -> int:
         group=args.group,
         max_rounds=args.max_rounds,
         tool_budget=args.tool_budget,
+        providers=providers,
     )
 
     async def one(sample: dict, semaphore: asyncio.Semaphore) -> dict:

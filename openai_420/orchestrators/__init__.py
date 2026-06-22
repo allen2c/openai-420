@@ -12,6 +12,9 @@ populate the registry; new orchestrators must be added to the imports below to r
 """
 
 from openai_420.orchestrators.base import Orchestrator, get, names, register
+from openai_420.orchestrators.heterogeneous_consensus import (
+    HeterogeneousConsensusOrchestrator,
+)
 from openai_420.orchestrators.parallel_consensus import ParallelConsensusOrchestrator
 from openai_420.orchestrators.single import SingleOrchestrator, ToolSingleOrchestrator
 from openai_420.orchestrators.tool_grounded_verification import (
@@ -19,6 +22,7 @@ from openai_420.orchestrators.tool_grounded_verification import (
 )
 
 __all__ = [
+    "HeterogeneousConsensusOrchestrator",
     "Orchestrator",
     "ParallelConsensusOrchestrator",
     "SingleOrchestrator",
