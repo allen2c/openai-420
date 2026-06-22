@@ -40,7 +40,13 @@ Modules: `scratchpad.py` (the board) · `roster.py` (agents + system prompts + `
 `orchestrators/base.py` defines the contract every system implements: `async run(user_query)
 -> str`, returning the final deliverable with reasoning stripped (the `single` baseline lives
 here too, as `SingleOrchestrator`). Variants are **kept forever and named by mechanism** (never
-a bare `Orchestrator`): `parallel_consensus` (the v1 loop), `single` (the baseline).
+a bare `Orchestrator`): `parallel_consensus` (the v1 loop), `single` (the baseline),
+`tool_grounded_verification` (v1 loop + specialists that call the `run_python` sandbox to ground
+a numeric/derivable answer — the proven lever against same-model false consensus), and
+`tool_single` (single + the same tool loop, the control that holds tools equal). The sandboxed
+tool lives in `openai_420/tools.py` (`run_python`, pydantic-monty); the bounded tool-call loop is
+`agents.run_with_tool_loop`. Tool grounding breaks the no-tool apples-to-apples contract, so the
+honest claim is "tool framework beats BOTH a tool-equipped single AND the no-tool framework."
 
 Adding one is "write the class, register it" — no harness branch per system:
 

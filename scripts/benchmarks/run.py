@@ -4,10 +4,15 @@
     python -m scripts.benchmarks.run --benchmark math500 --system parallel_consensus --group A --limit 50
     python -m scripts.benchmarks.run --benchmark truthfulqa --system single --record
 
-Two systems share one ``query -> answer`` interface:
+All orchestrators share one ``query -> answer`` interface (``--system`` choices come from the
+registry; see ``openai_420/orchestrators``):
 
-- ``single``             — one model call; the reference baseline these benchmarks measure against.
-- ``parallel_consensus`` — the multi-agent orchestrator, with ``--group`` selecting the roster.
+- ``single``                       — one model call; the reference baseline.
+- ``parallel_consensus``           — the multi-agent orchestrator (``--group`` selects the roster).
+- ``tool_grounded_verification``   — parallel_consensus with specialists that may call ``run_python``
+                                     (``--tool-budget``) to ground a numeric/derivable answer.
+- ``tool_single``                  — single given the same ``run_python`` loop; the control that
+                                     holds tools equal in the framework-vs-single comparison.
 
 A run is identified by a reproducible signature — model, the ``sample`` (scheme + n + seed +
 ids_hash), and ``code_version`` (git sha) — so two runs can be proven paired (same ids_hash)
