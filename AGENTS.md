@@ -28,14 +28,41 @@ an earlier one). The load-bearing ones:
 - **Inference settings are pinned & recorded** (Law 13): `temperature` is the model publisher's
   officially recommended value (gpt-oss-20b → 1.0; mistral-small3.2 → 0.15), passed to every call
   and logged in the run's fingerprint. Reasoning models also pin `reasoning_effort` (gpt-oss →
-  medium); instruct models reject it — leave it unset for them.
+  medium); instruct models reject it — leave it unset for them. `max_completion_tokens` → **32768**
+  (gpt-oss at medium burns the whole budget reasoning on hard problems and truncates the answer at
+  smaller budgets). **Effort must match difficulty**: `low` eliminates truncation and is ~14×
+  cheaper but cripples hard sets (AIME single 50%→20%) — keep medium+ for hard math.
 
 Modules: `scratchpad.py` (the board) · `roster.py` (agents + system prompts + `GROUPS`) ·
 `conversation.py` (per-agent cached history) · `conclude.py` (captain's control tool) ·
 `agents.py` (Specialist/Captain — the only LLM callers, async-only) ·
-`orchestrators/parallel_consensus.py` (the v1 loop) · `trace.py` (decision logging).
+`orchestrators/` (the systems — see below) · `tools.py` (the sandboxed `run_python`) ·
+`ratelimit.py` (client-side RPM/TPM governor — see below) · `trace.py` (decision logging).
 
-Orchestrator variants are kept forever and named by mechanism (never a bare `Orchestrator`).
+### Orchestrators — abstract base + registry
+
+`orchestrators/base.py` defines the contract every system implements: `async run(user_query)
+-> str`, returning the final deliverable with reasoning stripped (the `single` baseline lives
+here too, as `SingleOrchestrator`). Variants are **kept forever and named by mechanism** (never
+a bare `Orchestrator`): `parallel_consensus` (the v1 loop), `single` (the baseline),
+`tool_grounded_verification` (v1 loop + specialists that call the `run_python` sandbox to ground
+a numeric/derivable answer — the proven lever against same-model false consensus), and
+`tool_single` (single + the same tool loop, the control that holds tools equal). The sandboxed
+tool lives in `openai_420/tools.py` (`run_python`, pydantic-monty); the bounded tool-call loop is
+`agents.run_with_tool_loop`. Tool grounding breaks the no-tool apples-to-apples contract, so the
+honest claim is "tool framework beats BOTH a tool-equipped single AND the no-tool framework."
+
+Adding one is "write the class, register it" — no harness branch per system:
+
+1. Subclass `Orchestrator`, implement `run`, decorate with `@register("<mechanism_name>")`.
+2. Override `from_args(*, client, model, gen_params, **options)` if you need harness knobs
+   (e.g. `group`, `max_rounds`); the default uses only the shared three. Read what you need
+   from `options` so the library never depends on the CLI's arg shape.
+3. Import the module in `orchestrators/__init__.py` so it registers on package load.
+
+`scripts/benchmarks/run.py` dispatches by name: `--system` choices come from
+`orchestrators.names()`, and it builds one stateless instance via `from_args` (reused across
+all concurrent questions — `run()` builds fresh agents and a fresh board per query).
 
 ## Diversity = epistemology, not persona
 
@@ -57,9 +84,16 @@ teammates by name, with each agent committing a complete answer every round.
 
 ## Running the eval (the source of truth for "does it help")
 
-The formal harness is `scripts/benchmarks/` — **read its `README.md`**. Three benchmarks
-(`math500`, `gpqa_diamond` gated, `truthfulqa`), objective grading where possible
+The formal harness is `scripts/benchmarks/` — **read its `README.md`**. Benchmarks
+(`math500`, `aime`, `gpqa_diamond` gated, `truthfulqa`), objective grading where possible
 (`math_verify` / MC letter), paired McNemar significance, mean±std over `--repeats`.
+
+Token-heavy runs are paced by a client-side **rate governor** (`ratelimit.py`): it keeps offered
+load under the provider's RPM/TPM (`OPENAI_RPM`/`OPENAI_TPM`/`OPENAI_MAX_RETRIES`/
+`OPENAI_BACKOFF_BASE`) with an explicit, logged backoff, so the tool orchestrator can't exhaust
+retries and crash a run on a 429. `--concurrency` no longer bounds the real token rate — the
+governor does — so raise it freely. A question that still fails terminally is recorded as a miss,
+never crashing the whole run.
 
 `truthfulqa` is judge-graded, and a model must not grade its own truthfulness — so generation and
 judging are decoupled. Run it with `--defer-judge` (predictions only, `correct: null`); an
@@ -91,3 +125,12 @@ Confounds often dwarf the architecture and must be controlled first: provider/se
 7/10). Architecture-v1 has two structural limits left for v2/v3, not fixable by prompt:
 (A) no-consensus → forced-select is near-random; (B) MC false-consensus / shared-model error.
 Full detail in the `openai-420-eval-harness` and `openai-420-debate-findings` memories.
+
+**v0.0.3 (tool grounding — NEGATIVE result).** `tool_grounded_verification` (specialists may call
+`run_python`) does NOT beat `parallel_consensus` on math500 (n=500, seed 7): the headline contrast
+is 1 fixed / 5 broke (p=0.22), directionally negative. The tool is redundant with debate here —
+debate already fixes the arithmetic-slip false-consensus the tool targeted, and `parallel_consensus`
+is near ceiling (96.8%), so the tool only adds risk. It IS a real math lever (helped `single` +1.0;
+HURT on conceptual gpqa), consistent with the research's near-ceiling prediction. Next: harder math
+(`aime`) where debate alone can't saturate. Variants are kept forever; the negative result stands as
+the finding. Detail in `openai-420-v003-orchestrator-candidates` and `openai-420-tool-prompt-design`.

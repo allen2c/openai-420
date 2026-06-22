@@ -1,15 +1,18 @@
-"""ParallelConsensusOrchestrator — the v1 control loop (PRINCIPLES Law 1, 2, 3, 8).
+"""ToolGroundedVerificationOrchestrator — v1's loop with tool-grounded specialists (Laws 1, 2, 3, 8).
 
-Each round: dispatch every specialist in parallel (Law 3), record their answers on the
-board the orchestrator owns (Law 1), then let the captain judge consensus (Law 8). On
-consensus the captain answers (Law 10); otherwise its direction is recorded (Law 9) and
-the next round begins. ``max_rounds`` is the backstop.
+Mechanically identical to ``parallel_consensus``: parallel specialists each round (Law 3),
+answers recorded on the board (Law 1), captain judges consensus (Law 8) and selects verbatim
+(Law 10), ``max_rounds`` backstop. The ONE change is that specialists are ``VerifyingSpecialist``
+— each may call the sandboxed ``run_python`` tool to CHECK a numeric/derivable claim before
+committing its answer. That injects a fact outside the shared same-model knowledge distribution,
+the only proven lever against confident shared mistakes (the hard ceiling) that no amount of
+same-model debate produces.
 
-This is program logic only (Law 2): it schedules and records, but never builds a prompt,
-calls a model, or reads prose to decide — it branches on the captain's boolean flag.
+Law 2 holds: the orchestrator still only schedules and records, branching on the captain's
+boolean. The tool runs deterministically inside a specialist's turn (see ``run_with_tool_loop``);
+the captain never calls it and never sees tool output as a verdict, so it stays a non-authority.
 
-Many orchestrator variants will live beside this one and old ones are never deleted, so
-the name states its mechanism: parallel specialists + captain-judged consensus.
+Name states the mechanism: tool-grounded verification by the specialists.
 """
 
 from __future__ import annotations
@@ -18,7 +21,12 @@ import asyncio
 
 import openai
 
-from openai_420.agents import Captain, Specialist, extract_answer
+from openai_420.agents import (
+    DEFAULT_TOOL_BUDGET,
+    Captain,
+    VerifyingSpecialist,
+    extract_answer,
+)
 from openai_420.orchestrators.base import Orchestrator, register
 from openai_420.roster import CAPTAIN, GROUPS, SPECIALISTS, AgentSpec
 from openai_420.scratchpad import Scratchpad
@@ -27,8 +35,8 @@ from openai_420.trace import log_decision
 DEFAULT_MAX_ROUNDS = 3
 
 
-@register("parallel_consensus")
-class ParallelConsensusOrchestrator(Orchestrator):
+@register("tool_grounded_verification")
+class ToolGroundedVerificationOrchestrator(Orchestrator):
     @classmethod
     def from_args(
         cls,
@@ -38,13 +46,15 @@ class ParallelConsensusOrchestrator(Orchestrator):
         gen_params: dict,
         group: str = "A",
         max_rounds: int = DEFAULT_MAX_ROUNDS,
+        tool_budget: int = DEFAULT_TOOL_BUDGET,
         **options,
-    ) -> "ParallelConsensusOrchestrator":
+    ) -> "ToolGroundedVerificationOrchestrator":
         return cls(
             client=client,
             model=model,
             specialist_specs=GROUPS[group],
             max_rounds=max_rounds,
+            tool_budget=tool_budget,
             gen_params=gen_params,
         )
 
@@ -56,6 +66,7 @@ class ParallelConsensusOrchestrator(Orchestrator):
         specialist_specs: list[AgentSpec] = SPECIALISTS,
         captain_spec: AgentSpec = CAPTAIN,
         max_rounds: int = DEFAULT_MAX_ROUNDS,
+        tool_budget: int = DEFAULT_TOOL_BUDGET,
         gen_params: dict | None = None,
     ) -> None:
         self._client = client
@@ -63,18 +74,20 @@ class ParallelConsensusOrchestrator(Orchestrator):
         self._specialist_specs = specialist_specs
         self._captain_spec = captain_spec
         self._max_rounds = max_rounds
+        self._tool_budget = tool_budget
         self._gen_params = gen_params or {}
 
     async def run(self, user_query: str) -> str:
         roster = [*self._specialist_specs, self._captain_spec]
         specialists = [
-            Specialist(
+            VerifyingSpecialist(
                 spec=spec,
                 roster=roster,
                 client=self._client,
                 model=self._model,
                 user_query=user_query,
                 gen_params=self._gen_params,
+                tool_budget=self._tool_budget,
             )
             for spec in self._specialist_specs
         ]

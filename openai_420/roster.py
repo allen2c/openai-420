@@ -187,7 +187,10 @@ GROUPS: dict[str, list[AgentSpec]] = {
 SPECIALISTS: list[AgentSpec] = GROUPS["roles"]  # default team
 
 
-def specialist_system_prompt(spec: AgentSpec, roster: list[AgentSpec]) -> str:
+def specialist_system_prompt(
+    spec: AgentSpec, roster: list[AgentSpec], tools_note: str = ""
+) -> str:
+    extra = f"\n\n{tools_note}" if tools_note else ""
     return (
         f"You are {spec.name}, in a small group chat where teammates work out the answer to a "
         f"user's request together. Each teammate weighs answers by a different standard; "
@@ -217,6 +220,7 @@ def specialist_system_prompt(spec: AgentSpec, roster: list[AgentSpec]) -> str:
         f"- End EVERY message with a line containing exactly `{ANSWER_MARKER}`, then your "
         "current answer in the language and format the user asked for, and nothing after it. "
         "Your discussion goes ABOVE that line; only the deliverable goes below it."
+        + extra
     )
 
 

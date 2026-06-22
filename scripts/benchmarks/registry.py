@@ -14,10 +14,12 @@ the correct letter is reproducible across runs without leaking position.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Callable
 
 _LETTERS = "ABCD"
+_AIME_YEAR = re.compile(r"(\d{4})_AIME")
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,21 @@ def _math500(row: dict, idx: int) -> dict:
         answer=row["answer"],
         grading="math",
         meta={"level": row.get("level"), "subject": row.get("subject")},
+    )
+
+
+def _aime(row: dict, idx: int) -> dict:
+    """AIME — competition math, integer answers 0–999, harder than MATH-500's tail. Bucketed by
+    contest year (parsed from the AoPS url) so the runner can break the score down per year.
+    """
+    match = _AIME_YEAR.search(row.get("url", ""))
+    return make_sample(
+        "aime",
+        idx,
+        question=row["problem"],
+        answer=str(row["answer"]),
+        grading="math",
+        meta={"year": match.group(1) if match else "unknown"},
     )
 
 
@@ -103,6 +120,15 @@ BENCHMARKS: dict[str, Benchmark] = {
         grading="math",
         normalize=_math500,
         expected=500,
+    ),
+    "aime": Benchmark(
+        name="aime",
+        dataset="AI-MO/aimo-validation-aime",  # AIME 2022–2024, integer answers
+        config="default",
+        split="train",
+        grading="math",
+        normalize=_aime,
+        expected=90,
     ),
     "gpqa_diamond": Benchmark(
         name="gpqa_diamond",

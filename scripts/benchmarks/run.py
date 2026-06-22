@@ -4,10 +4,15 @@
     python -m scripts.benchmarks.run --benchmark math500 --system parallel_consensus --group A --limit 50
     python -m scripts.benchmarks.run --benchmark truthfulqa --system single --record
 
-Two systems share one ``query -> answer`` interface:
+All orchestrators share one ``query -> answer`` interface (``--system`` choices come from the
+registry; see ``openai_420/orchestrators``):
 
-- ``single``             — one model call; the reference baseline these benchmarks measure against.
-- ``parallel_consensus`` — the multi-agent orchestrator, with ``--group`` selecting the roster.
+- ``single``                       — one model call; the reference baseline.
+- ``parallel_consensus``           — the multi-agent orchestrator (``--group`` selects the roster).
+- ``tool_grounded_verification``   — parallel_consensus with specialists that may call ``run_python``
+                                     (``--tool-budget``) to ground a numeric/derivable answer.
+- ``tool_single``                  — single given the same ``run_python`` loop; the control that
+                                     holds tools equal in the framework-vs-single comparison.
 
 A run is identified by a reproducible signature — model, the ``sample`` (scheme + n + seed +
 ids_hash), and ``code_version`` (git sha) — so two runs can be proven paired (same ids_hash)
@@ -38,9 +43,9 @@ from urllib.parse import urlparse
 import openai
 from tqdm import tqdm
 
-from openai_420.orchestrators.parallel_consensus import ParallelConsensusOrchestrator
+from openai_420 import orchestrators
+from openai_420.ratelimit import ThrottledClient, governor_from_env
 from openai_420.roster import GROUPS
-from openai_420.trace import warn_if_truncated
 from scripts.benchmarks import score as scoring
 from scripts.benchmarks.logs import LOG, configure
 from scripts.benchmarks.paths import RESULTS_DIR, dataset_path
@@ -50,7 +55,18 @@ _FORMAT_INSTRUCTION = {
     "mc": "\n\nThink it through, then end with `Answer: <letter>` (one of A, B, C, D).",
     "judge": "\n\nAnswer truthfully and concisely.",
 }
-_SINGLE_SYSTEM = "You are a careful expert. Answer the user's question."
+# Which orchestrators read which knobs — controls the label suffix and what the fingerprint
+# records (so a single run never claims a group/tool_budget it didn't use).
+_ROSTER_SYSTEMS = {"parallel_consensus", "tool_grounded_verification"}
+_TOOL_SYSTEMS = {"tool_grounded_verification", "tool_single"}
+
+
+def _uses_roster(system: str) -> bool:
+    return system in _ROSTER_SYSTEMS
+
+
+def _uses_tool(system: str) -> bool:
+    return system in _TOOL_SYSTEMS
 
 
 def load_samples(benchmark: str) -> list[dict]:
@@ -89,19 +105,23 @@ def select_samples(
     return chosen
 
 
-def client_from_env() -> tuple[openai.AsyncOpenAI, str, dict]:
+def client_from_env() -> tuple[ThrottledClient, str, dict]:
     model = os.environ.get("OPENAI_MODEL")
     if not model:
         raise SystemExit("OPENAI_MODEL is not set (see .env).")
     base_url = os.environ.get("OPENAI_BASE_URL")
-    # High max_retries so Groq's 250k tokens/min limit (consensus is token-heavy) throttles the
-    # run via backoff instead of killing it — the SDK honors retry-after on each 429.
-    client = openai.AsyncOpenAI(
+    # The SDK's own retries are disabled: a RateGovernor (OPENAI_RPM/TPM/...) PROACTIVELY paces
+    # every call under Groq's 250k TPM and owns an explicit, logged backoff. The token-heavy tool
+    # orchestrator otherwise saturates TPM until the SDK's retries exhaust and one 429 kills the run.
+    raw = openai.AsyncOpenAI(
         base_url=base_url,
         api_key=os.environ.get("OPENAI_API_KEY"),
-        max_retries=16,
+        max_retries=0,
     )
-    return client, model, inference_fingerprint(base_url, model, gen_params_from_env())
+    governor = governor_from_env(os.environ.get)
+    inference = inference_fingerprint(base_url, model, gen_params_from_env())
+    inference["rate"] = governor.fingerprint
+    return ThrottledClient(raw, governor), model, inference
 
 
 def gen_params_from_env() -> dict:
@@ -144,42 +164,6 @@ def inference_fingerprint(base_url: str | None, model: str, params: dict) -> dic
     }
 
 
-async def answer_single(
-    client: openai.AsyncOpenAI, model: str, sample: dict, gen_params: dict
-) -> str:
-    prompt = sample["question"] + _FORMAT_INSTRUCTION[sample["grading"]]
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": _SINGLE_SYSTEM},
-            {"role": "user", "content": prompt},
-        ],
-        **gen_params,
-    )
-    warn_if_truncated(response, sample["id"], "single")
-    return response.choices[0].message.content or ""
-
-
-async def answer_consensus(
-    client: openai.AsyncOpenAI,
-    model: str,
-    sample: dict,
-    group: str,
-    rounds: int,
-    gen_params: dict,
-) -> str:
-    orchestrator = ParallelConsensusOrchestrator(
-        client=client,
-        model=model,
-        specialist_specs=GROUPS[group],
-        max_rounds=rounds,
-        gen_params=gen_params,
-    )
-    return await orchestrator.run(
-        sample["question"] + _FORMAT_INSTRUCTION[sample["grading"]]
-    )
-
-
 async def evaluate(args: argparse.Namespace) -> int:
     configure(verbose=args.verbose)
     pool = load_samples(args.benchmark)
@@ -187,9 +171,7 @@ async def evaluate(args: argparse.Namespace) -> int:
     client, model, inference = client_from_env()
     gen_params = inference["params"]
     judge_model = args.judge_model or model
-    label = args.system + (
-        f"/{args.group}" if args.system == "parallel_consensus" else ""
-    )
+    label = args.system + (f"/{args.group}" if _uses_roster(args.system) else "")
     LOG.info(
         "%s on %s: %d/%d questions (%s, seed=%d), %d repeat(s), concurrency=%d, %s/%s %s",
         label,
@@ -205,14 +187,34 @@ async def evaluate(args: argparse.Namespace) -> int:
         gen_params or "(provider defaults)",
     )
 
+    # One stateless orchestrator instance, reused across all concurrent questions: its run()
+    # is self-contained (it builds fresh agents and a fresh board per query).
+    system = orchestrators.get(args.system).from_args(
+        client=client,
+        model=model,
+        gen_params=gen_params,
+        group=args.group,
+        max_rounds=args.max_rounds,
+        tool_budget=args.tool_budget,
+    )
+
     async def one(sample: dict, semaphore: asyncio.Semaphore) -> dict:
         async with semaphore:
-            if args.system == "single":
-                prediction = await answer_single(client, model, sample, gen_params)
-            else:
-                prediction = await answer_consensus(
-                    client, model, sample, args.group, args.max_rounds, gen_params
-                )
+            prompt = sample["question"] + _FORMAT_INSTRUCTION[sample["grading"]]
+            try:
+                prediction = await system.run(prompt)
+            except Exception as exc:
+                # Isolate a question that fails terminally (e.g. retries exhausted on a 429): record
+                # it as a miss with the error, never let one question kill the whole run.
+                LOG.error("question %s failed: %s", sample["id"], exc)
+                return {
+                    "id": sample["id"],
+                    "bucket": _bucket(sample),
+                    "correct": False,  # a failed generation is a miss, never deferred to the judge
+                    "extracted": "",
+                    "gold": sample.get("answer", ""),
+                    "error": f"{type(exc).__name__}: {exc}"[:200],
+                }
             if sample["grading"] == "judge" and args.defer_judge:
                 meta = sample["meta"]
                 return {
@@ -275,11 +277,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Run + score a benchmark; print, and optionally save a JSON result file."
     )
     parser.add_argument(
-        "--benchmark", required=True, choices=["math500", "gpqa_diamond", "truthfulqa"]
+        "--benchmark",
+        required=True,
+        choices=["math500", "aime", "gpqa_diamond", "truthfulqa"],
     )
-    parser.add_argument(
-        "--system", default="single", choices=["single", "parallel_consensus"]
-    )
+    parser.add_argument("--system", default="single", choices=orchestrators.names())
     parser.add_argument(
         "--group",
         default="A",
@@ -287,6 +289,12 @@ def main(argv: list[str] | None = None) -> int:
         help="roster for parallel_consensus",
     )
     parser.add_argument("--max-rounds", type=int, default=3)
+    parser.add_argument(
+        "--tool-budget",
+        type=int,
+        default=3,
+        help="max run_python tool round-trips per specialist turn (tool_* systems)",
+    )
     parser.add_argument(
         "--limit", type=int, default=None, help="evaluate only N questions"
     )
@@ -338,7 +346,12 @@ def main(argv: list[str] | None = None) -> int:
 def _bucket(sample: dict) -> str:
     meta = sample["meta"]
     if sample["grading"] == "math":
-        return f"level_{meta.get('level')}"
+        # math500 buckets by difficulty level; aime has no levels, so bucket by contest year.
+        return (
+            f"level_{meta['level']}"
+            if meta.get("level")
+            else str(meta.get("year") or "all")
+        )
     if sample["benchmark"] == "gpqa_diamond":
         return str(meta.get("domain") or "unknown")
     return str(meta.get("category") or "unknown")
@@ -362,15 +375,16 @@ def _summary(
     items: list[dict],
 ) -> dict:
     """The run's signature + aggregate metrics — what gets printed and saved."""
-    is_consensus = args.system == "parallel_consensus"
+    roster = _uses_roster(args.system)
     n = len(items)
     graded = [i for i in items if i["correct"] is not None]
     deferred = args.benchmark == "truthfulqa" and args.defer_judge
     return {
         "benchmark": args.benchmark,
         "system": args.system,
-        "group": args.group if is_consensus else None,
-        "max_rounds": args.max_rounds if is_consensus else None,
+        "group": args.group if roster else None,
+        "max_rounds": args.max_rounds if roster else None,
+        "tool_budget": args.tool_budget if _uses_tool(args.system) else None,
         "model": model,
         "inference": inference,
         "judge_model": (

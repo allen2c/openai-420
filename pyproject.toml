@@ -5,7 +5,7 @@ description = "Grok 4.20's inference-time multi-agent chatroom, rebuilt from scr
 license = "Apache-2.0 license"
 name = "openai-420"
 requires-python = ">=3.11,<4"
-version = "0.0.2"
+version = "0.0.3"
 
 [dependency-groups]
 dev = [
@@ -13,6 +13,8 @@ dev = [
   "isort",
   "math-verify",
   "matplotlib",
+  "numpy",
+  "pydantic-monty",
   "pytest",
   "pytest-asyncio",
   "pyyaml",

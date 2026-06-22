@@ -10,12 +10,15 @@ Async only: every agent method is a coroutine function and the injected client M
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 
 import openai
 
 from openai_420.conclude import CONCLUDE_TOOL, Conclusion, parse_conclude
 from openai_420.conversation import Conversation
+from openai_420.ratelimit import ThrottledClient
 from openai_420.roster import (
     ANSWER_MARKER,
     AgentSpec,
@@ -23,8 +26,23 @@ from openai_420.roster import (
     specialist_system_prompt,
 )
 from openai_420.scratchpad import Scratchpad
+from openai_420.tools import RUN_PYTHON_TOOL, run_python
 from openai_420.trace import log_decision, warn_if_truncated
 
+DEFAULT_TOOL_BUDGET = 3
+SPECIALIST_TOOL_NOTE = (
+    "You have tools available (each is described to you separately). Decide for yourself when "
+    "calling one would make your answer more reliable — for instance to mechanically check or "
+    "derive a step you might otherwise get wrong — and skip them when the question doesn't call "
+    "for one. You and your teammates run on the same model and may share the same blind spot, so a "
+    "mechanical check can catch a mistake you would all otherwise agree on. Show what you checked "
+    "in your reasoning above the marker; if a tool result conflicts with your draft, work out why "
+    "before trusting either."
+)
+_NO_TOOL_DIRECTIVE = (
+    "Tools are unavailable now. Give your final answer directly in text, using your own reasoning, "
+    "and do NOT call any tool. Keep the required answer format."
+)
 _CONCLUDE_ACK = "Recorded."
 _SELECT_INSTRUCTION = (
     "The debate is over. Below are the specialists' final answers, numbered. Choose the "
@@ -48,6 +66,52 @@ def extract_answer(output: str) -> str:
     return output.strip()
 
 
+async def run_with_tool_loop(
+    client: openai.AsyncOpenAI,
+    model: str,
+    conversation: Conversation,
+    *,
+    tool_budget: int,
+    who: str,
+    stage: str,
+    **params,
+) -> tuple[str, list[dict]]:
+    """Drive a bounded ``run_python`` tool-call loop on ``conversation``; return (content, trace).
+
+    The model is offered the tool (``tool_choice="auto"``) and decides whether to compute. Each
+    tool call is executed deterministically by the orchestrator (Law 2) and its result appended to
+    the conversation, then the model is re-invoked — up to ``tool_budget`` times. When the budget
+    is exhausted while the model still wants to compute, or when the backend can't produce a usable
+    tool call at all, ``_force_text_answer`` closes the turn with a plain answer. ``trace`` records
+    each {code, result} for the decision log."""
+
+    async def tooled():
+        return await _complete_tooled(
+            client, model, conversation.messages, who, stage, **params
+        )
+
+    async def plain_answer():
+        return await _force_text_answer(
+            client, model, conversation, who, stage, **params
+        )
+
+    trace: list[dict] = []
+    message = await tooled()
+    for _ in range(tool_budget):
+        if message is None:  # tool path unusable this turn — degrade to a plain answer
+            return await plain_answer(), trace
+        if not message.tool_calls:  # the model answered without computing
+            return message.content or "", trace
+        await _apply_tool_calls(message, conversation, trace)
+        message = await tooled()
+    # budget spent: close out with a forced plain answer (recording any last tool results first)
+    if message is not None and message.tool_calls:
+        await _apply_tool_calls(message, conversation, trace)
+    elif message is not None:
+        return message.content or "", trace
+    return await plain_answer(), trace
+
+
 class Specialist:
     """A debating specialist. ``respond`` is a coroutine — await it once per round."""
 
@@ -60,6 +124,7 @@ class Specialist:
         model: str,
         user_query: str,
         gen_params: dict | None = None,
+        tools_note: str = "",
     ) -> None:
         _require_async_client(client)
         self.name = spec.name
@@ -67,7 +132,8 @@ class Specialist:
         self._model = model
         self._gen_params = gen_params or {}
         self._conversation = Conversation(
-            system=specialist_system_prompt(spec, roster), user_query=user_query
+            system=specialist_system_prompt(spec, roster, tools_note),
+            user_query=user_query,
         )
         self._last_seen = 0
 
@@ -188,6 +254,45 @@ class Captain:
         return index
 
 
+class VerifyingSpecialist(Specialist):
+    """A Specialist that may call ``run_python`` to ground its answer before committing it.
+
+    Identical debate behavior to ``Specialist`` (same prompt + the tool note, same board, same
+    reasons-exchange, Law 11) — the only change is the bounded tool-call loop inside ``respond``.
+    The tool injects a fact outside the shared same-model knowledge distribution, the one lever
+    against confident shared mistakes (the hard ceiling). The captain never sees the tool.
+    """
+
+    def __init__(self, *, tool_budget: int = DEFAULT_TOOL_BUDGET, **kwargs) -> None:
+        super().__init__(tools_note=SPECIALIST_TOOL_NOTE, **kwargs)
+        self._tool_budget = tool_budget
+
+    async def respond(self, board: Scratchpad, *, round: int) -> str:
+        delta = board.delta(for_author=self.name, since_round=self._last_seen)
+        if delta:
+            self._conversation.add_delta(delta)
+        content, tool_trace = await run_with_tool_loop(
+            self._client,
+            self._model,
+            self._conversation,
+            tool_budget=self._tool_budget,
+            who=self.name,
+            stage="respond",
+            **self._gen_params,
+        )
+        self._conversation.add_own_turn(content)
+        self._last_seen = round - 1
+        log_decision(
+            self.name,
+            "respond",
+            round=round,
+            saw=[e.author for e in delta],
+            output=content,
+            tools=tool_trace,
+        )
+        return content
+
+
 def _interpret_conclusion(message: object) -> Conclusion:
     """Turn the captain's reply into a Conclusion, tolerating a missing tool call.
 
@@ -206,6 +311,108 @@ def _parse_choice(content: str, n: int) -> int:
         if 1 <= value <= n:
             return value - 1
     return 0
+
+
+async def _apply_tool_calls(
+    message: object, conversation: Conversation, trace: list[dict]
+) -> None:
+    """Record a tool-calling assistant turn, execute each call, append its result. Mutates the
+    conversation and the trace; pure scheduling + deterministic execution (Law 2)."""
+    conversation.add_assistant_message(message.model_dump(exclude_none=True))
+    for call in message.tool_calls:
+        result = await _execute_tool_call(call)
+        trace.append({"code": _tool_code(call), "result": result})
+        conversation.add_tool_result(call.id, result)
+
+
+async def _execute_tool_call(call: object) -> str:
+    """Run one tool call in the sandbox, off the event loop. Always returns a string (never
+    raises): an unknown tool or unparseable arguments come back as a deterministic error the
+    model can react to, same as a sandbox error."""
+    if call.function.name != "run_python":
+        return f"Error: unknown tool {call.function.name!r}"
+    try:
+        code = json.loads(call.function.arguments)["code"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        return f"Error: could not parse run_python arguments: {exc}"
+    return await asyncio.to_thread(run_python, code)
+
+
+def _tool_code(call: object) -> str:
+    """The `code` argument of a tool call for the decision log, raw args if unparseable."""
+    try:
+        return json.loads(call.function.arguments).get("code", "")
+    except (json.JSONDecodeError, TypeError):
+        return call.function.arguments
+
+
+async def _complete_tooled(
+    client: openai.AsyncOpenAI,
+    model: str,
+    messages: list,
+    who: str,
+    stage: str,
+    *,
+    attempts: int = 4,
+    **params,
+):
+    """A completion that OFFERS ``run_python`` (``tool_choice="auto"``); returns the message, or
+    ``None`` when the backend can't produce a usable tool call (the caller then degrades).
+
+    Unlike ``_complete_text`` (which retries with NO tools to dodge gpt-oss's stray
+    ``container.exec``), this keeps our tool defined across retries so a legitimate ``run_python``
+    is never suppressed. gpt-oss on Groq/vLLM frequently emits a tool call whose ``arguments``
+    aren't valid JSON (the raw expression instead of ``{"code": ...}``), rejected as ``400
+    tool_use_failed``; that is retried. Any other ``400`` is treated as the tool path being
+    unusable — returns ``None`` at once rather than burning attempts. Either way we never raise:
+    a backend tool quirk must not lose a query."""
+    for _ in range(attempts):
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=[RUN_PYTHON_TOOL],
+                tool_choice="auto",
+                **params,
+            )
+            warn_if_truncated(response, who, stage)
+            return response.choices[0].message
+        except openai.BadRequestError as exc:
+            if "tool_use_failed" not in str(exc):
+                break
+    log_decision("orchestrator", "tool_degraded", who=who, stage=stage)
+    return None
+
+
+async def _force_text_answer(
+    client: openai.AsyncOpenAI,
+    model: str,
+    conversation: Conversation,
+    who: str,
+    stage: str,
+    *,
+    attempts: int = 4,
+    **params,
+) -> str:
+    """Close a turn with a plain text answer, no tool. Used when the tool path is degrading or the
+    budget is spent. Offering no tool isn't enough — a model primed to compute keeps emitting a
+    tool call, which the backend then rejects (``400 "tool choice is none, but model called a
+    tool"``) — so an explicit directive tells it to stop. If it still won't (rare, hard items),
+    give up with empty content rather than crash the query; that item just scores as a miss.
+    """
+    conversation.add_user_message(_NO_TOOL_DIRECTIVE)
+    for _ in range(attempts):
+        try:
+            response = await client.chat.completions.create(
+                model=model, messages=conversation.messages, **params
+            )
+            warn_if_truncated(response, who, stage)
+            return response.choices[0].message.content or ""
+        except openai.BadRequestError as exc:
+            if "tool_use_failed" not in str(exc):
+                raise
+    log_decision("orchestrator", "tool_give_up", who=who, stage=stage)
+    return ""
 
 
 async def _complete_text(
@@ -246,7 +453,8 @@ def _reasoning(message: object) -> str:
 
 
 def _require_async_client(client: object) -> None:
-    if not isinstance(client, openai.AsyncOpenAI):
+    if not isinstance(client, (openai.AsyncOpenAI, ThrottledClient)):
         raise TypeError(
-            "Only async OpenAI clients are supported; pass an openai.AsyncOpenAI."
+            "Only async OpenAI clients are supported; pass an openai.AsyncOpenAI "
+            "(or a ratelimit.ThrottledClient wrapping one)."
         )
