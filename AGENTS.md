@@ -33,7 +33,8 @@ an earlier one). The load-bearing ones:
 Modules: `scratchpad.py` (the board) · `roster.py` (agents + system prompts + `GROUPS`) ·
 `conversation.py` (per-agent cached history) · `conclude.py` (captain's control tool) ·
 `agents.py` (Specialist/Captain — the only LLM callers, async-only) ·
-`orchestrators/` (the systems — see below) · `trace.py` (decision logging).
+`orchestrators/` (the systems — see below) · `tools.py` (the sandboxed `run_python`) ·
+`ratelimit.py` (client-side RPM/TPM governor — see below) · `trace.py` (decision logging).
 
 ### Orchestrators — abstract base + registry
 
@@ -80,9 +81,16 @@ teammates by name, with each agent committing a complete answer every round.
 
 ## Running the eval (the source of truth for "does it help")
 
-The formal harness is `scripts/benchmarks/` — **read its `README.md`**. Three benchmarks
-(`math500`, `gpqa_diamond` gated, `truthfulqa`), objective grading where possible
+The formal harness is `scripts/benchmarks/` — **read its `README.md`**. Benchmarks
+(`math500`, `aime`, `gpqa_diamond` gated, `truthfulqa`), objective grading where possible
 (`math_verify` / MC letter), paired McNemar significance, mean±std over `--repeats`.
+
+Token-heavy runs are paced by a client-side **rate governor** (`ratelimit.py`): it keeps offered
+load under the provider's RPM/TPM (`OPENAI_RPM`/`OPENAI_TPM`/`OPENAI_MAX_RETRIES`/
+`OPENAI_BACKOFF_BASE`) with an explicit, logged backoff, so the tool orchestrator can't exhaust
+retries and crash a run on a 429. `--concurrency` no longer bounds the real token rate — the
+governor does — so raise it freely. A question that still fails terminally is recorded as a miss,
+never crashing the whole run.
 
 `truthfulqa` is judge-graded, and a model must not grade its own truthfulness — so generation and
 judging are decoupled. Run it with `--defer-judge` (predictions only, `correct: null`); an
@@ -114,3 +122,12 @@ Confounds often dwarf the architecture and must be controlled first: provider/se
 7/10). Architecture-v1 has two structural limits left for v2/v3, not fixable by prompt:
 (A) no-consensus → forced-select is near-random; (B) MC false-consensus / shared-model error.
 Full detail in the `openai-420-eval-harness` and `openai-420-debate-findings` memories.
+
+**v0.0.3 (tool grounding — NEGATIVE result).** `tool_grounded_verification` (specialists may call
+`run_python`) does NOT beat `parallel_consensus` on math500 (n=500, seed 7): the headline contrast
+is 1 fixed / 5 broke (p=0.22), directionally negative. The tool is redundant with debate here —
+debate already fixes the arithmetic-slip false-consensus the tool targeted, and `parallel_consensus`
+is near ceiling (96.8%), so the tool only adds risk. It IS a real math lever (helped `single` +1.0;
+HURT on conceptual gpqa), consistent with the research's near-ceiling prediction. Next: harder math
+(`aime`) where debate alone can't saturate. Variants are kept forever; the negative result stands as
+the finding. Detail in `openai-420-v003-orchestrator-candidates` and `openai-420-tool-prompt-design`.

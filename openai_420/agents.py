@@ -84,36 +84,32 @@ async def run_with_tool_loop(
     is exhausted while the model still wants to compute, or when the backend can't produce a usable
     tool call at all, ``_force_text_answer`` closes the turn with a plain answer. ``trace`` records
     each {code, result} for the decision log."""
-    trace: list[dict] = []
-    message = await _complete_tooled(
-        client, model, conversation.messages, who, stage, **params
-    )
-    for _ in range(tool_budget):
-        if (
-            message is None
-        ):  # the tool path is unusable this turn — degrade to a plain answer
-            return (
-                await _force_text_answer(
-                    client, model, conversation, who, stage, **params
-                ),
-                trace,
-            )
-        if not message.tool_calls:
-            return message.content or "", trace
-        await _apply_tool_calls(message, conversation, trace)
-        message = await _complete_tooled(
+
+    async def tooled():
+        return await _complete_tooled(
             client, model, conversation.messages, who, stage, **params
         )
-    if message is not None and not message.tool_calls:
-        return message.content or "", trace
-    if (
-        message is not None
-    ):  # budget spent but still mid-computation — record the last results
+
+    async def plain_answer():
+        return await _force_text_answer(
+            client, model, conversation, who, stage, **params
+        )
+
+    trace: list[dict] = []
+    message = await tooled()
+    for _ in range(tool_budget):
+        if message is None:  # tool path unusable this turn — degrade to a plain answer
+            return await plain_answer(), trace
+        if not message.tool_calls:  # the model answered without computing
+            return message.content or "", trace
         await _apply_tool_calls(message, conversation, trace)
-    return (
-        await _force_text_answer(client, model, conversation, who, stage, **params),
-        trace,
-    )
+        message = await tooled()
+    # budget spent: close out with a forced plain answer (recording any last tool results first)
+    if message is not None and message.tool_calls:
+        await _apply_tool_calls(message, conversation, trace)
+    elif message is not None:
+        return message.content or "", trace
+    return await plain_answer(), trace
 
 
 class Specialist:

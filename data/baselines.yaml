@@ -47,3 +47,41 @@ v0.0.2:
     TruthfulQA shows high churn (122 fixed / 68 broke): the framework rewrites many answers,
     net positive but noisy. repeats=1 means run-to-run variance is unquantified; a multi-repeat
     mean±std and new orchestrators land together in v0.0.3.
+
+v0.0.3:
+  date: 2026-06-22
+  code_version: aae2889   # tool orchestrator + tool-agnostic prompt; pre rate-governor commit
+  framework: "parallel_consensus · group A · max_rounds 3 (still the current best)"
+  sample: { scheme: all, seed: 7 }
+  repeats: 1
+
+  # New orchestrator under test: tool_grounded_verification — parallel_consensus whose specialists
+  # may call a sandboxed run_python (pydantic-monty) to ground a numeric/derivable answer. Plus
+  # tool_single (single + the same tool loop) so the 3-way holds tools equal. NEGATIVE RESULT.
+  results:
+    math500:
+      n: 500
+      ids_hash: ab55bc299b7c
+      single: 0.936
+      tool_single: 0.946           # +1.0 vs single, but 14 fixed / 9 broke, p=0.40 (n.s.)
+      framework_A: 0.968           # parallel_consensus; 18 fixed / 2 broke vs single, p=0.0004
+      tool_grounded_A: 0.960       # tool framework
+      mcnemar:
+        single_vs_framework:          { p: 0.0004, fixed: 18, broke: 2 }  # debate works (reproduces v0.0.2)
+        framework_vs_tool_grounded:   { p: 0.2188, fixed: 1,  broke: 5 }  # HEADLINE: tool ON the framework — negative
+        tool_single_vs_tool_grounded: { p: 0.1892, fixed: 14, broke: 7 }  # framework effect, tools held equal
+
+  notes: >
+    tool_grounded_verification does NOT beat parallel_consensus on math500: the headline contrast
+    (tool framework vs no-tool framework) is 1 fixed / 5 broke — directionally NEGATIVE, not
+    significant. The adoption criterion (beat BOTH the no-tool framework AND the tool-equipped
+    single, significantly) fails. WHY: parallel_consensus is already ~96.8% (near ceiling) and
+    debate ALREADY fixes the arithmetic-slip false-consensus the tool targeted, so the tool is
+    redundant here and only adds risk (over-trust on a mis-modeled problem, tool-loop distraction).
+    The tool IS a real math lever — it helped single +1.0 where there's headroom, and on
+    gpqa_diamond it HURT (conceptual MC, wrong error type). Consistent with the grok research's
+    near-ceiling prediction (GPQA multi-agent was only +1.4). Next: a harder math set (AIME) where
+    debate alone can't reach ceiling. Orchestrator kept (variants are never deleted); the negative
+    result is the deliverable. Shipped alongside: client-side rate governor (ThrottledClient,
+    OPENAI_RPM/TPM) + per-question failure isolation, after the token-heavy tool arm crashed a full
+    run on a 429.
