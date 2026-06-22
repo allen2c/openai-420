@@ -28,7 +28,10 @@ an earlier one). The load-bearing ones:
 - **Inference settings are pinned & recorded** (Law 13): `temperature` is the model publisher's
   officially recommended value (gpt-oss-20b → 1.0; mistral-small3.2 → 0.15), passed to every call
   and logged in the run's fingerprint. Reasoning models also pin `reasoning_effort` (gpt-oss →
-  medium); instruct models reject it — leave it unset for them.
+  medium); instruct models reject it — leave it unset for them. `max_completion_tokens` → **32768**
+  (gpt-oss at medium burns the whole budget reasoning on hard problems and truncates the answer at
+  smaller budgets). **Effort must match difficulty**: `low` eliminates truncation and is ~14×
+  cheaper but cripples hard sets (AIME single 50%→20%) — keep medium+ for hard math.
 
 Modules: `scratchpad.py` (the board) · `roster.py` (agents + system prompts + `GROUPS`) ·
 `conversation.py` (per-agent cached history) · `conclude.py` (captain's control tool) ·
