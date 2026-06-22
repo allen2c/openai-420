@@ -18,6 +18,7 @@ import openai
 
 from openai_420.conclude import CONCLUDE_TOOL, Conclusion, parse_conclude
 from openai_420.conversation import Conversation
+from openai_420.ratelimit import ThrottledClient
 from openai_420.roster import (
     ANSWER_MARKER,
     AgentSpec,
@@ -456,7 +457,8 @@ def _reasoning(message: object) -> str:
 
 
 def _require_async_client(client: object) -> None:
-    if not isinstance(client, openai.AsyncOpenAI):
+    if not isinstance(client, (openai.AsyncOpenAI, ThrottledClient)):
         raise TypeError(
-            "Only async OpenAI clients are supported; pass an openai.AsyncOpenAI."
+            "Only async OpenAI clients are supported; pass an openai.AsyncOpenAI "
+            "(or a ratelimit.ThrottledClient wrapping one)."
         )

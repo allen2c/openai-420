@@ -44,6 +44,7 @@ import openai
 from tqdm import tqdm
 
 from openai_420 import orchestrators
+from openai_420.ratelimit import ThrottledClient, governor_from_env
 from openai_420.roster import GROUPS
 from scripts.benchmarks import score as scoring
 from scripts.benchmarks.logs import LOG, configure
@@ -104,19 +105,23 @@ def select_samples(
     return chosen
 
 
-def client_from_env() -> tuple[openai.AsyncOpenAI, str, dict]:
+def client_from_env() -> tuple[ThrottledClient, str, dict]:
     model = os.environ.get("OPENAI_MODEL")
     if not model:
         raise SystemExit("OPENAI_MODEL is not set (see .env).")
     base_url = os.environ.get("OPENAI_BASE_URL")
-    # High max_retries so Groq's 250k tokens/min limit (consensus is token-heavy) throttles the
-    # run via backoff instead of killing it — the SDK honors retry-after on each 429.
-    client = openai.AsyncOpenAI(
+    # The SDK's own retries are disabled: a RateGovernor (OPENAI_RPM/TPM/...) PROACTIVELY paces
+    # every call under Groq's 250k TPM and owns an explicit, logged backoff. The token-heavy tool
+    # orchestrator otherwise saturates TPM until the SDK's retries exhaust and one 429 kills the run.
+    raw = openai.AsyncOpenAI(
         base_url=base_url,
         api_key=os.environ.get("OPENAI_API_KEY"),
-        max_retries=16,
+        max_retries=0,
     )
-    return client, model, inference_fingerprint(base_url, model, gen_params_from_env())
+    governor = governor_from_env(os.environ.get)
+    inference = inference_fingerprint(base_url, model, gen_params_from_env())
+    inference["rate"] = governor.fingerprint
+    return ThrottledClient(raw, governor), model, inference
 
 
 def gen_params_from_env() -> dict:
@@ -196,7 +201,20 @@ async def evaluate(args: argparse.Namespace) -> int:
     async def one(sample: dict, semaphore: asyncio.Semaphore) -> dict:
         async with semaphore:
             prompt = sample["question"] + _FORMAT_INSTRUCTION[sample["grading"]]
-            prediction = await system.run(prompt)
+            try:
+                prediction = await system.run(prompt)
+            except Exception as exc:
+                # Isolate a question that fails terminally (e.g. retries exhausted on a 429): record
+                # it as a miss with the error, never let one question kill the whole run.
+                LOG.error("question %s failed: %s", sample["id"], exc)
+                return {
+                    "id": sample["id"],
+                    "bucket": _bucket(sample),
+                    "correct": False,  # a failed generation is a miss, never deferred to the judge
+                    "extracted": "",
+                    "gold": sample.get("answer", ""),
+                    "error": f"{type(exc).__name__}: {exc}"[:200],
+                }
             if sample["grading"] == "judge" and args.defer_judge:
                 meta = sample["meta"]
                 return {
