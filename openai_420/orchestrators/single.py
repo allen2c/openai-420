@@ -11,10 +11,18 @@ from __future__ import annotations
 
 import openai
 
+from openai_420.agents import DEFAULT_TOOL_BUDGET, run_with_tool_loop
+from openai_420.conversation import Conversation
 from openai_420.orchestrators.base import Orchestrator, register
 from openai_420.trace import warn_if_truncated
 
 SINGLE_SYSTEM = "You are a careful expert. Answer the user's question."
+SINGLE_TOOL_NOTE = (
+    "You have a `run_python` tool — a sandboxed Python calculator (builtins + `import math` "
+    "only; nothing else importable). Before you commit any numeric, algebraic, or combinatorial "
+    "answer, USE IT to actually compute or check the step rather than trusting mental arithmetic. "
+    "If the tool result contradicts your draft, trust the tool and fix your answer."
+)
 
 
 @register("single")
@@ -41,3 +49,56 @@ class SingleOrchestrator(Orchestrator):
         )
         warn_if_truncated(response, "single", "run")
         return response.choices[0].message.content or ""
+
+
+@register("tool_single")
+class ToolSingleOrchestrator(Orchestrator):
+    """The single baseline GIVEN the same ``run_python`` tool loop as the verifying specialists.
+
+    It exists for the experiment, not the leaderboard: comparing the tool-grounded framework
+    against THIS isolates the framework's contribution with tools held equal, so the honest claim
+    is "the tool-grounded framework beats both a tool-equipped single and the no-tool framework,"
+    never just "beats the no-tool single" (tools inject capability the control must hold fixed).
+    """
+
+    @classmethod
+    def from_args(
+        cls,
+        *,
+        client: openai.AsyncOpenAI,
+        model: str,
+        gen_params: dict,
+        tool_budget: int = DEFAULT_TOOL_BUDGET,
+        **options,
+    ) -> "ToolSingleOrchestrator":
+        return cls(
+            client=client, model=model, gen_params=gen_params, tool_budget=tool_budget
+        )
+
+    def __init__(
+        self,
+        *,
+        client: openai.AsyncOpenAI,
+        model: str,
+        gen_params: dict | None = None,
+        tool_budget: int = DEFAULT_TOOL_BUDGET,
+    ) -> None:
+        self._client = client
+        self._model = model
+        self._gen_params = gen_params or {}
+        self._tool_budget = tool_budget
+
+    async def run(self, user_query: str) -> str:
+        conversation = Conversation(
+            system=f"{SINGLE_SYSTEM}\n\n{SINGLE_TOOL_NOTE}", user_query=user_query
+        )
+        content, _ = await run_with_tool_loop(
+            self._client,
+            self._model,
+            conversation,
+            tool_budget=self._tool_budget,
+            who="tool_single",
+            stage="run",
+            **self._gen_params,
+        )
+        return content

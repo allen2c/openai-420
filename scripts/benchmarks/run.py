@@ -49,6 +49,18 @@ _FORMAT_INSTRUCTION = {
     "mc": "\n\nThink it through, then end with `Answer: <letter>` (one of A, B, C, D).",
     "judge": "\n\nAnswer truthfully and concisely.",
 }
+# Which orchestrators read which knobs — controls the label suffix and what the fingerprint
+# records (so a single run never claims a group/tool_budget it didn't use).
+_ROSTER_SYSTEMS = {"parallel_consensus", "tool_grounded_verification"}
+_TOOL_SYSTEMS = {"tool_grounded_verification", "tool_single"}
+
+
+def _uses_roster(system: str) -> bool:
+    return system in _ROSTER_SYSTEMS
+
+
+def _uses_tool(system: str) -> bool:
+    return system in _TOOL_SYSTEMS
 
 
 def load_samples(benchmark: str) -> list[dict]:
@@ -149,9 +161,7 @@ async def evaluate(args: argparse.Namespace) -> int:
     client, model, inference = client_from_env()
     gen_params = inference["params"]
     judge_model = args.judge_model or model
-    label = args.system + (
-        f"/{args.group}" if args.system == "parallel_consensus" else ""
-    )
+    label = args.system + (f"/{args.group}" if _uses_roster(args.system) else "")
     LOG.info(
         "%s on %s: %d/%d questions (%s, seed=%d), %d repeat(s), concurrency=%d, %s/%s %s",
         label,
@@ -175,6 +185,7 @@ async def evaluate(args: argparse.Namespace) -> int:
         gen_params=gen_params,
         group=args.group,
         max_rounds=args.max_rounds,
+        tool_budget=args.tool_budget,
     )
 
     async def one(sample: dict, semaphore: asyncio.Semaphore) -> dict:
@@ -254,6 +265,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--max-rounds", type=int, default=3)
     parser.add_argument(
+        "--tool-budget",
+        type=int,
+        default=3,
+        help="max run_python tool round-trips per specialist turn (tool_* systems)",
+    )
+    parser.add_argument(
         "--limit", type=int, default=None, help="evaluate only N questions"
     )
     parser.add_argument(
@@ -328,15 +345,16 @@ def _summary(
     items: list[dict],
 ) -> dict:
     """The run's signature + aggregate metrics — what gets printed and saved."""
-    is_consensus = args.system == "parallel_consensus"
+    roster = _uses_roster(args.system)
     n = len(items)
     graded = [i for i in items if i["correct"] is not None]
     deferred = args.benchmark == "truthfulqa" and args.defer_judge
     return {
         "benchmark": args.benchmark,
         "system": args.system,
-        "group": args.group if is_consensus else None,
-        "max_rounds": args.max_rounds if is_consensus else None,
+        "group": args.group if roster else None,
+        "max_rounds": args.max_rounds if roster else None,
+        "tool_budget": args.tool_budget if _uses_tool(args.system) else None,
         "model": model,
         "inference": inference,
         "judge_model": (
