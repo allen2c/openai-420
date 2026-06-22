@@ -213,6 +213,18 @@ async def evaluate(args: argparse.Namespace) -> int:
                 prediction = await answer_consensus(
                     client, model, sample, args.group, args.max_rounds, gen_params
                 )
+            if sample["grading"] == "judge" and args.defer_judge:
+                meta = sample["meta"]
+                return {
+                    "id": sample["id"],
+                    "bucket": _bucket(sample),
+                    "correct": None,  # filled out-of-band by the Sonnet judge workflow
+                    "extracted": prediction,
+                    "gold": sample["answer"],
+                    "question": sample["question"],
+                    "correct_answers": meta.get("correct_answers"),
+                    "incorrect_answers": meta.get("incorrect_answers"),
+                }
             if sample["grading"] == "judge":
                 verdict = await scoring.grade_judge(
                     client, judge_model, sample, prediction
@@ -237,9 +249,12 @@ async def evaluate(args: argparse.Namespace) -> int:
             for future in asyncio.as_completed(tasks):
                 item = await future
                 items.append(item)
-                correct += item["correct"]
+                correct += 1 if item["correct"] else 0
                 bar.update(1)
-                bar.set_postfix(acc=f"{correct / len(items):.1%}")
+                if args.defer_judge:
+                    bar.set_postfix(graded="deferred")
+                else:
+                    bar.set_postfix(acc=f"{correct / len(items):.1%}")
         summary = _summary(args, model, judge_model, inference, samples, items)
         _report(summary)
         if args.record:
@@ -295,6 +310,13 @@ def main(argv: list[str] | None = None) -> int:
         "--judge-model", default=None, help="override the TruthfulQA judge model"
     )
     parser.add_argument(
+        "--defer-judge",
+        action="store_true",
+        help="TruthfulQA only: record ungraded items (correct=null) carrying the prediction + "
+        "references, to be graded out-of-band by an independent Sonnet workflow judge "
+        "(scripts.benchmarks.judge). The in-process self-judge is skipped.",
+    )
+    parser.add_argument(
         "--record",
         action="store_true",
         help="save this result as JSON under data/results/",
@@ -306,6 +328,10 @@ def main(argv: list[str] | None = None) -> int:
         "--notes", default="", help="free-text note stored on a saved result"
     )
     args = parser.parse_args(argv)
+    if args.defer_judge and args.benchmark != "truthfulqa":
+        parser.error(
+            "--defer-judge only applies to truthfulqa (the judge-graded benchmark)"
+        )
     return asyncio.run(evaluate(args))
 
 
@@ -321,6 +347,8 @@ def _bucket(sample: dict) -> str:
 def _breakdown(items: list[dict]) -> dict[str, float]:
     buckets: dict[str, list[bool]] = {}
     for item in items:
+        if item["correct"] is None:  # ungraded (deferred judge) — skip
+            continue
         buckets.setdefault(item["bucket"], []).append(item["correct"])
     return {b: sum(v) / len(v) for b, v in sorted(buckets.items())}
 
@@ -336,6 +364,8 @@ def _summary(
     """The run's signature + aggregate metrics — what gets printed and saved."""
     is_consensus = args.system == "parallel_consensus"
     n = len(items)
+    graded = [i for i in items if i["correct"] is not None]
+    deferred = args.benchmark == "truthfulqa" and args.defer_judge
     return {
         "benchmark": args.benchmark,
         "system": args.system,
@@ -343,9 +373,15 @@ def _summary(
         "max_rounds": args.max_rounds if is_consensus else None,
         "model": model,
         "inference": inference,
-        "judge_model": judge_model if args.benchmark == "truthfulqa" else None,
+        "judge_model": (
+            ("deferred" if deferred else judge_model)
+            if args.benchmark == "truthfulqa"
+            else None
+        ),
         "n": n,
-        "score": sum(i["correct"] for i in items) / n if n else 0.0,
+        "score": (
+            None if deferred else (sum(i["correct"] for i in graded) / n if n else 0.0)
+        ),
         "breakdown": _breakdown(items),
         "sample": {
             "scheme": args.sample if args.limit else "all",
@@ -425,7 +461,12 @@ def _report(summary: dict) -> None:
     if summary["group"]:
         head += f" / {summary['group']}"
     sig = f"n={summary['n']}, {summary['inference']['provider']}, {summary['code_version']}"
-    print(f"\n{head}  →  {summary['score']:.1%}  ({sig})")
+    score = (
+        "deferred (awaiting Sonnet judge)"
+        if summary["score"] is None
+        else f"{summary['score']:.1%}"
+    )
+    print(f"\n{head}  →  {score}  ({sig})")
     for bucket, value in summary["breakdown"].items():
         print(f"    {bucket:<28} {value:.1%}")
 

@@ -5,8 +5,9 @@ Guide for agents working in this repo.
 ## What this is
 
 `openai-420` rebuilds Grok 4.20's inference-time multi-agent debate from scratch over a local
-OpenAI-compatible backend (Ollama; currently **mistral-small3.2**, but the architecture is
-model-agnostic): specialist agents debate, a captain detects consensus and selects the answer.
+OpenAI-compatible backend (currently **Groq `openai/gpt-oss-20b`**; was Ollama mistral-small3.2 —
+the architecture is model-agnostic): specialist agents debate, a captain detects consensus and
+selects the answer.
 It is an **experimental research repo** — the point is to learn *when and why* multi-agent
 debate helps, measured with numbers.
 
@@ -25,8 +26,9 @@ an earlier one). The load-bearing ones:
   marker, then the deliverable; the user gets only the part after the marker. (The marker is
   `[[ANSWER]]`, not `---ANSWER---`: a leading `---` renders as a markdown rule and gets split.)
 - **Inference settings are pinned & recorded** (Law 13): `temperature` is the model publisher's
-  officially recommended value (mistral-small3.2 → 0.15), passed to every call and logged in the
-  run's fingerprint. Instruct models reject `reasoning_effort` — leave it unset for them.
+  officially recommended value (gpt-oss-20b → 1.0; mistral-small3.2 → 0.15), passed to every call
+  and logged in the run's fingerprint. Reasoning models also pin `reasoning_effort` (gpt-oss →
+  medium); instruct models reject it — leave it unset for them.
 
 Modules: `scratchpad.py` (the board) · `roster.py` (agents + system prompts + `GROUPS`) ·
 `conversation.py` (per-agent cached history) · `conclude.py` (captain's control tool) ·
@@ -58,6 +60,11 @@ teammates by name, with each agent committing a complete answer every round.
 The formal harness is `scripts/benchmarks/` — **read its `README.md`**. Three benchmarks
 (`math500`, `gpqa_diamond` gated, `truthfulqa`), objective grading where possible
 (`math_verify` / MC letter), paired McNemar significance, mean±std over `--repeats`.
+
+`truthfulqa` is judge-graded, and a model must not grade its own truthfulness — so generation and
+judging are decoupled. Run it with `--defer-judge` (predictions only, `correct: null`); an
+independent **Sonnet** workflow then grades the saved items and `scripts.benchmarks.judge apply`
+patches the verdicts in, producing a `*_judged.json` with the same schema as an objective run.
 
 ```
 python -m scripts.benchmarks.download all

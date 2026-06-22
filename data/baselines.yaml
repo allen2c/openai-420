@@ -1,0 +1,49 @@
+# Canonical current-best baselines — maintained BY HAND (no auto-promote; run.py only writes
+# immutable per-run history under data/results/). Copy here only the numbers you trust, with
+# enough provenance to reproduce them. `single` is the reference; `framework` is the
+# parallel_consensus orchestrator. A pair is comparable only within one dataset's `ids_hash`.
+
+inference:
+  provider: groq
+  model: openai/gpt-oss-20b
+  params: { temperature: 1.0, top_p: 1.0, reasoning_effort: medium, max_completion_tokens: 8192 }
+
+v0.0.2:
+  date: 2026-06-22
+  code_version: eeb7b1e-dirty   # harness: run.py --defer-judge + Sonnet judge (judge.py), pre-commit
+  framework: "parallel_consensus · group A (Minimal Trident: Evidentialist/Rationalist/Pragmatist) · max_rounds 3"
+  sample: { scheme: all, seed: 7 }   # full datasets
+  repeats: 1                          # no error bars yet — variance under temp=1.0 deferred to v0.0.3
+  truthfulqa_judge: claude-sonnet-4-6  # independent judge, decoupled from generation (a model must not grade itself)
+
+  # single vs framework, paired McNemar (exact binomial). All three significant (p < 0.05).
+  results:
+    math500:
+      n: 500
+      ids_hash: ab55bc299b7c
+      single: 0.926
+      framework_A: 0.956
+      delta: +0.030
+      mcnemar: { p: 0.0107, fixed: 23, broke: 8 }
+    gpqa_diamond:
+      n: 198
+      ids_hash: 8b527dfc2bd0
+      single: 0.611
+      framework_A: 0.707
+      delta: +0.096
+      mcnemar: { p: 0.0054, fixed: 31, broke: 12 }
+    truthfulqa:
+      n: 817
+      ids_hash: f30b776a3988
+      single: 0.696
+      framework_A: 0.763
+      delta: +0.067
+      mcnemar: { p: 0.0001, fixed: 122, broke: 68 }
+
+  notes: >
+    First full-dataset baseline on Groq gpt-oss-20b. The framework beats single on all three
+    benchmarks, all significant. Largest gain on gpqa_diamond (+9.6pp) — hard reasoning benefits
+    most from debate; smallest on math500 (+3.0pp) where single is already near ceiling.
+    TruthfulQA shows high churn (122 fixed / 68 broke): the framework rewrites many answers,
+    net positive but noisy. repeats=1 means run-to-run variance is unquantified; a multi-repeat
+    mean±std and new orchestrators land together in v0.0.3.
