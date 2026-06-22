@@ -277,7 +277,9 @@ def main(argv: list[str] | None = None) -> int:
         description="Run + score a benchmark; print, and optionally save a JSON result file."
     )
     parser.add_argument(
-        "--benchmark", required=True, choices=["math500", "gpqa_diamond", "truthfulqa"]
+        "--benchmark",
+        required=True,
+        choices=["math500", "aime", "gpqa_diamond", "truthfulqa"],
     )
     parser.add_argument("--system", default="single", choices=orchestrators.names())
     parser.add_argument(
@@ -344,7 +346,12 @@ def main(argv: list[str] | None = None) -> int:
 def _bucket(sample: dict) -> str:
     meta = sample["meta"]
     if sample["grading"] == "math":
-        return f"level_{meta.get('level')}"
+        # math500 buckets by difficulty level; aime has no levels, so bucket by contest year.
+        return (
+            f"level_{meta['level']}"
+            if meta.get("level")
+            else str(meta.get("year") or "all")
+        )
     if sample["benchmark"] == "gpqa_diamond":
         return str(meta.get("domain") or "unknown")
     return str(meta.get("category") or "unknown")
