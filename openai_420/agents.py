@@ -38,6 +38,10 @@ SPECIALIST_TOOL_NOTE = (
     "check in your reasoning above the marker. If the tool result contradicts your draft, trust "
     "the tool and fix your answer."
 )
+_NO_TOOL_DIRECTIVE = (
+    "The calculator is unavailable now. Give your final answer directly in text, using your own "
+    "reasoning, and do NOT call any tool. Keep the required answer format."
+)
 _CONCLUDE_ACK = "Recorded."
 _SELECT_INSTRUCTION = (
     "The debate is over. Below are the specialists' final answers, numbered. Choose the "
@@ -74,32 +78,41 @@ async def run_with_tool_loop(
     """Drive a bounded ``run_python`` tool-call loop on ``conversation``; return (content, trace).
 
     The model is offered the tool (``tool_choice="auto"``) and decides whether to compute. Each
-    tool call is executed deterministically by the orchestrator (Law 2) and its result appended
-    to the conversation, then the model is re-invoked — up to ``tool_budget`` times. If the budget
-    is exhausted while the model still wants to compute, one final no-tool completion forces the
-    answer. ``trace`` records each {code, result} for the decision log."""
+    tool call is executed deterministically by the orchestrator (Law 2) and its result appended to
+    the conversation, then the model is re-invoked — up to ``tool_budget`` times. When the budget
+    is exhausted while the model still wants to compute, or when the backend can't produce a usable
+    tool call at all, ``_force_text_answer`` closes the turn with a plain answer. ``trace`` records
+    each {code, result} for the decision log."""
     trace: list[dict] = []
-    response = await _complete_tooled(client, model, conversation.messages, **params)
-    warn_if_truncated(response, who, stage)
-    message = response.choices[0].message
+    message = await _complete_tooled(
+        client, model, conversation.messages, who, stage, **params
+    )
     for _ in range(tool_budget):
-        if not message.tool_calls:
-            break
-        await _apply_tool_calls(message, conversation, trace)
-        response = await _complete_tooled(
-            client, model, conversation.messages, **params
-        )
-        warn_if_truncated(response, who, stage)
-        message = response.choices[0].message
-    else:
-        if message.tool_calls:
-            await _apply_tool_calls(message, conversation, trace)
-            response = await _complete_text(
-                client, model, conversation.messages, **params
+        if (
+            message is None
+        ):  # the tool path is unusable this turn — degrade to a plain answer
+            return (
+                await _force_text_answer(
+                    client, model, conversation, who, stage, **params
+                ),
+                trace,
             )
-            warn_if_truncated(response, who, stage)
-            message = response.choices[0].message
-    return message.content or "", trace
+        if not message.tool_calls:
+            return message.content or "", trace
+        await _apply_tool_calls(message, conversation, trace)
+        message = await _complete_tooled(
+            client, model, conversation.messages, who, stage, **params
+        )
+    if message is not None and not message.tool_calls:
+        return message.content or "", trace
+    if (
+        message is not None
+    ):  # budget spent but still mid-computation — record the last results
+        await _apply_tool_calls(message, conversation, trace)
+    return (
+        await _force_text_answer(client, model, conversation, who, stage, **params),
+        trace,
+    )
 
 
 class Specialist:
@@ -340,40 +353,69 @@ async def _complete_tooled(
     client: openai.AsyncOpenAI,
     model: str,
     messages: list,
+    who: str,
+    stage: str,
     *,
     attempts: int = 4,
     **params,
 ):
-    """A completion that OFFERS ``run_python`` (``tool_choice="auto"``), retried on a spurious
-    backend tool failure. Unlike ``_complete_text`` (which retries with NO tools to dodge gpt-oss's
-    stray ``container.exec``), this keeps our tool defined across retries so a legitimate
-    ``run_python`` call is never suppressed — it only re-rolls the stochastic ``400
-    tool_use_failed``.
+    """A completion that OFFERS ``run_python`` (``tool_choice="auto"``); returns the message, or
+    ``None`` when the backend can't produce a usable tool call (the caller then degrades).
 
-    gpt-oss on Groq/vLLM frequently emits a tool call whose ``arguments`` are not valid JSON
-    (e.g. the raw expression instead of ``{"code": ...}``), rejected as ``400 tool_use_failed``;
-    it also occasionally returns a different tool-related ``400``. The tool is best-effort, so on
-    ANY ``BadRequestError`` from the tool-offered call — ``tool_use_failed`` retried first, any
-    other 400 degraded immediately — fall back to a plain no-tool completion instead of raising:
-    the specialist still answers (ungrounded this turn) and no backend quirk ever loses a query. A
-    genuine config bug still surfaces, because ``_complete_text`` sends the same request minus the
-    tool. The degradation is logged so its rate is measurable in a real run."""
-    last: openai.BadRequestError | None = None
+    Unlike ``_complete_text`` (which retries with NO tools to dodge gpt-oss's stray
+    ``container.exec``), this keeps our tool defined across retries so a legitimate ``run_python``
+    is never suppressed. gpt-oss on Groq/vLLM frequently emits a tool call whose ``arguments``
+    aren't valid JSON (the raw expression instead of ``{"code": ...}``), rejected as ``400
+    tool_use_failed``; that is retried. Any other ``400`` is treated as the tool path being
+    unusable — returns ``None`` at once rather than burning attempts. Either way we never raise:
+    a backend tool quirk must not lose a query."""
     for _ in range(attempts):
         try:
-            return await client.chat.completions.create(
+            response = await client.chat.completions.create(
                 model=model,
                 messages=messages,
                 tools=[RUN_PYTHON_TOOL],
                 tool_choice="auto",
                 **params,
             )
+            warn_if_truncated(response, who, stage)
+            return response.choices[0].message
         except openai.BadRequestError as exc:
-            last = exc
             if "tool_use_failed" not in str(exc):
-                break  # a non-retryable tool 400 — degrade now rather than burn attempts
-    log_decision("orchestrator", "tool_degraded", reason=type(last).__name__)
-    return await _complete_text(client, model, messages, **params)
+                break
+    log_decision("orchestrator", "tool_degraded", who=who, stage=stage)
+    return None
+
+
+async def _force_text_answer(
+    client: openai.AsyncOpenAI,
+    model: str,
+    conversation: Conversation,
+    who: str,
+    stage: str,
+    *,
+    attempts: int = 4,
+    **params,
+) -> str:
+    """Close a turn with a plain text answer, no tool. Used when the tool path is degrading or the
+    budget is spent. Offering no tool isn't enough — a model primed to compute keeps emitting a
+    tool call, which the backend then rejects (``400 "tool choice is none, but model called a
+    tool"``) — so an explicit directive tells it to stop. If it still won't (rare, hard items),
+    give up with empty content rather than crash the query; that item just scores as a miss.
+    """
+    conversation.add_user_message(_NO_TOOL_DIRECTIVE)
+    for _ in range(attempts):
+        try:
+            response = await client.chat.completions.create(
+                model=model, messages=conversation.messages, **params
+            )
+            warn_if_truncated(response, who, stage)
+            return response.choices[0].message.content or ""
+        except openai.BadRequestError as exc:
+            if "tool_use_failed" not in str(exc):
+                raise
+    log_decision("orchestrator", "tool_give_up", who=who, stage=stage)
+    return ""
 
 
 async def _complete_text(
