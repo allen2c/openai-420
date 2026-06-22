@@ -30,17 +30,17 @@ from openai_420.trace import log_decision, warn_if_truncated
 
 DEFAULT_TOOL_BUDGET = 3
 SPECIALIST_TOOL_NOTE = (
-    "You have a `run_python` tool — a sandboxed Python calculator (builtins + `import math` "
-    "only; nothing else importable). Before you commit any numeric, algebraic, or combinatorial "
-    "answer, USE IT to actually compute or check the step rather than trusting mental "
-    "arithmetic: you and your teammates run on the same model and may share the same blind spot, "
-    "and a real calculation is the one thing that can break a confident shared mistake. Show the "
-    "check in your reasoning above the marker. If the tool result contradicts your draft, trust "
-    "the tool and fix your answer."
+    "You have tools available (each is described to you separately). Decide for yourself when "
+    "calling one would make your answer more reliable — for instance to mechanically check or "
+    "derive a step you might otherwise get wrong — and skip them when the question doesn't call "
+    "for one. You and your teammates run on the same model and may share the same blind spot, so a "
+    "mechanical check can catch a mistake you would all otherwise agree on. Show what you checked "
+    "in your reasoning above the marker; if a tool result conflicts with your draft, work out why "
+    "before trusting either."
 )
 _NO_TOOL_DIRECTIVE = (
-    "The calculator is unavailable now. Give your final answer directly in text, using your own "
-    "reasoning, and do NOT call any tool. Keep the required answer format."
+    "Tools are unavailable now. Give your final answer directly in text, using your own reasoning, "
+    "and do NOT call any tool. Keep the required answer format."
 )
 _CONCLUDE_ACK = "Recorded."
 _SELECT_INSTRUCTION = (

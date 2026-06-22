@@ -18,10 +18,10 @@ from openai_420.trace import warn_if_truncated
 
 SINGLE_SYSTEM = "You are a careful expert. Answer the user's question."
 SINGLE_TOOL_NOTE = (
-    "You have a `run_python` tool — a sandboxed Python calculator (builtins + `import math` "
-    "only; nothing else importable). Before you commit any numeric, algebraic, or combinatorial "
-    "answer, USE IT to actually compute or check the step rather than trusting mental arithmetic. "
-    "If the tool result contradicts your draft, trust the tool and fix your answer."
+    "You have tools available (each is described to you separately). Decide for yourself when "
+    "calling one would make your answer more reliable — for instance to mechanically check or "
+    "derive a step you might otherwise get wrong — and skip them when the question doesn't call "
+    "for one. If a tool result conflicts with your draft, work out why before trusting either."
 )
 
 
