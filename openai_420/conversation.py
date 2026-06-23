@@ -26,6 +26,17 @@ class Conversation:
     def messages(self) -> list[dict]:
         return list(self._messages)
 
+    def mark(self) -> int:
+        """A checkpoint of the current length; pass to ``rewind`` to drop later turns.
+
+        Lets a caller speculatively append (e.g. a nudge + retry) and, if it never
+        succeeds, restore the history to the checkpoint so the byte-stable prefix is
+        not polluted by a failed exchange."""
+        return len(self._messages)
+
+    def rewind(self, mark: int) -> None:
+        del self._messages[mark:]
+
     def add_own_turn(self, content: str) -> None:
         self._messages.append({"role": "assistant", "content": content})
 

@@ -44,6 +44,12 @@ _NO_TOOL_DIRECTIVE = (
     "and do NOT call any tool. Keep the required answer format."
 )
 _CONCLUDE_ACK = "Recorded."
+_CONCLUDE_NUDGE = (
+    "You did not call the `conclude` tool. Respond now by calling `conclude` — set "
+    "`consensus` (true or false) and, when it is false, a `direction` for the next round. "
+    "Do not reply in prose."
+)
+DEFAULT_JUDGE_ATTEMPTS = 3
 _SELECT_INSTRUCTION = (
     "The debate is over. Below are the specialists' final answers, numbered. Choose the "
     "single best one — prefer the version the majority of specialists agree on. Do NOT "
@@ -192,18 +198,13 @@ class Captain:
         if delta:
             self._conversation.add_delta(delta)
         self._last_seen = round
-        try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                messages=self._conversation.messages,
-                tools=[CONCLUDE_TOOL],
-                tool_choice=_FORCE_CONCLUDE,
-                **self._gen_params,
-            )
-            message = response.choices[0].message
-        except openai.BadRequestError:
-            # The model answered in prose instead of calling the tool. Don't crash the
-            # run — keep debating (the conversation is left clean for a retry next round).
+        checkpoint = self._conversation.mark()
+        message = await self._forced_conclude()
+        if message is None:
+            # Never emitted the forced call (prose-only on Ollama, or a backend reject on
+            # Groq/vLLM), even after nudging. Don't crash the run — keep debating, and drop
+            # the failed nudge exchange so next round's prefix stays clean.
+            self._conversation.rewind(checkpoint)
             log_decision(
                 self.name,
                 "judge",
@@ -213,10 +214,8 @@ class Captain:
                 direction=_FALLBACK_DIRECTION,
             )
             return Conclusion(consensus=False, direction=_FALLBACK_DIRECTION)
-        warn_if_truncated(response, self.name, "judge")
         self._conversation.add_assistant_message(message.model_dump(exclude_none=True))
-        if message.tool_calls:
-            self._conversation.add_tool_result(message.tool_calls[0].id, _CONCLUDE_ACK)
+        self._conversation.add_tool_result(message.tool_calls[0].id, _CONCLUDE_ACK)
         conclusion = _interpret_conclusion(message)
         log_decision(
             self.name,
@@ -229,6 +228,40 @@ class Captain:
             fallback=False,
         )
         return conclusion
+
+    async def _forced_conclude(
+        self, *, attempts: int = DEFAULT_JUDGE_ATTEMPTS
+    ) -> object | None:
+        """Drive the captain to actually emit the forced ``conclude`` tool call.
+
+        ``tool_choice`` is not honored uniformly: Groq/vLLM reject a non-compliant turn as a
+        ``BadRequestError``, while Ollama happily returns a prose/reasoning message with no
+        ``tool_calls`` (the captain "thinks out loud" and stops). Either way the structured
+        signal is missing, so we append an explicit nudge and retry. Returns the message once
+        it carries a tool call, or ``None`` if it never complies within ``attempts``."""
+        for attempt in range(attempts):
+            try:
+                response = await self._client.chat.completions.create(
+                    model=self._model,
+                    messages=self._conversation.messages,
+                    tools=[CONCLUDE_TOOL],
+                    tool_choice=_FORCE_CONCLUDE,
+                    **self._gen_params,
+                )
+                message = response.choices[0].message
+            except openai.BadRequestError:
+                message = None
+            if message is not None:
+                warn_if_truncated(response, self.name, "judge")
+                if message.tool_calls:
+                    return message
+            if attempt < attempts - 1:
+                if message is not None:  # keep the prose so the nudge has context
+                    self._conversation.add_assistant_message(
+                        message.model_dump(exclude_none=True)
+                    )
+                self._conversation.add_user_message(_CONCLUDE_NUDGE)
+        return None
 
     async def select(self, candidates: list[str]) -> int:
         """Choose the best specialist answer by number (0-based) — never rewrite it.

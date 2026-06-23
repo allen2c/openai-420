@@ -4,6 +4,8 @@ import openai
 import pytest
 
 from openai_420.agents import (
+    _CONCLUDE_NUDGE,
+    _FALLBACK_DIRECTION,
     Captain,
     Specialist,
     _interpret_conclusion,
@@ -82,6 +84,85 @@ async def test_captain_judge_returns_a_conclusion(
 
     assert isinstance(conclusion, Conclusion)
     assert isinstance(conclusion.consensus, bool)
+
+
+def _response(message: object, finish_reason: str = "stop") -> SimpleNamespace:
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
+        usage=None,
+    )
+
+
+def _prose_response(text: str) -> SimpleNamespace:
+    """A captain reply that 'thinks out loud' and emits NO tool call (the Ollama failure)."""
+    message = SimpleNamespace(tool_calls=None, content=text, reasoning="")
+    message.model_dump = lambda exclude_none=True: {"role": "assistant", "content": text}
+    return _response(message)
+
+
+def _tool_response(arguments: str) -> SimpleNamespace:
+    call = SimpleNamespace(
+        id="call_1", function=SimpleNamespace(name="conclude", arguments=arguments)
+    )
+    message = SimpleNamespace(tool_calls=[call], content="", reasoning="")
+    message.model_dump = lambda exclude_none=True: {
+        "role": "assistant",
+        "tool_calls": [{"id": "call_1"}],
+    }
+    return _response(message)
+
+
+def _captain() -> Captain:
+    return Captain(
+        spec=CAPTAIN,
+        roster=ROSTER,
+        client=openai.AsyncOpenAI(api_key="x"),
+        model="m",
+        user_query="q",
+    )
+
+
+def _board_with_one_answer() -> Scratchpad:
+    board = Scratchpad()
+    board.append(round=1, author="Harper", kind="answer", content="42")
+    return board
+
+
+@pytest.mark.asyncio
+async def test_judge_nudges_then_succeeds_when_first_reply_skips_the_tool(monkeypatch):
+    captain = _captain()
+    replies = iter([_prose_response("all agree"), _tool_response('{"consensus": true}')])
+
+    async def fake_create(**kwargs):
+        return next(replies)
+
+    monkeypatch.setattr(captain._client.chat.completions, "create", fake_create)
+
+    conclusion = await captain.judge(_board_with_one_answer(), round=1)
+
+    assert conclusion == Conclusion(consensus=True, direction=None)
+    messages = captain._conversation.messages
+    assert any(
+        m.get("role") == "user" and m.get("content") == _CONCLUDE_NUDGE for m in messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_judge_falls_back_and_rewinds_when_the_tool_call_never_comes(monkeypatch):
+    captain = _captain()
+
+    async def fake_create(**kwargs):
+        return _prose_response("still no tool call")
+
+    monkeypatch.setattr(captain._client.chat.completions, "create", fake_create)
+
+    conclusion = await captain.judge(_board_with_one_answer(), round=1)
+
+    assert conclusion == Conclusion(consensus=False, direction=_FALLBACK_DIRECTION)
+    messages = captain._conversation.messages
+    # the failed nudge exchange was rewound: only system, user query, and the round's delta remain
+    assert len(messages) == 3
+    assert all(m.get("content") != _CONCLUDE_NUDGE for m in messages)
 
 
 def test_extract_answer_takes_text_after_the_marker():
