@@ -47,7 +47,8 @@ _CONCLUDE_ACK = "Recorded."
 _CONCLUDE_NUDGE = (
     "You did not call the `conclude` tool. Respond now by calling `conclude` — set "
     "`consensus` (true or false) and, when it is false, a `direction` for the next round. "
-    "Do not reply in prose."
+    "Do not reply in prose. Keep `direction` short and plain ASCII text on a single line — "
+    "no LaTeX, equations, newlines, or special symbols (they break the tool call)."
 )
 DEFAULT_JUDGE_ATTEMPTS = 3
 _SELECT_INSTRUCTION = (
@@ -234,11 +235,19 @@ class Captain:
     ) -> object | None:
         """Drive the captain to actually emit the forced ``conclude`` tool call.
 
-        ``tool_choice`` is not honored uniformly: Groq/vLLM reject a non-compliant turn as a
-        ``BadRequestError``, while Ollama happily returns a prose/reasoning message with no
-        ``tool_calls`` (the captain "thinks out loud" and stops). Either way the structured
-        signal is missing, so we append an explicit nudge and retry. Returns the message once
-        it carries a tool call, or ``None`` if it never complies within ``attempts``."""
+        Three things go wrong and all must degrade to a nudge+retry, never crash the question:
+        - ``tool_choice`` is not honored uniformly — Groq/vLLM reject a non-compliant turn as a
+          ``BadRequestError`` (400); Ollama instead returns a prose/reasoning message with no
+          ``tool_calls`` (the captain "thinks out loud" and stops).
+        - Ollama returns HTTP 500 ``error parsing tool call`` when the ``direction`` argument
+          carries LaTeX / newlines / unicode — its own tool-call JSON round-trip chokes on the
+          special characters (observed killing whole gpqa questions).
+        - the call times out on a slow local model.
+
+        So we catch ``APIError`` broadly: any failure to get a clean tool call becomes a nudge
+        and a retry, and after ``attempts`` a ``None`` that ``judge`` turns into a neutral
+        no-consensus fallback. The question survives on the ``max_rounds`` backstop instead of
+        erroring out. Returns the message once it carries a tool call, else ``None``."""
         for attempt in range(attempts):
             try:
                 response = await self._client.chat.completions.create(
@@ -249,7 +258,7 @@ class Captain:
                     **self._gen_params,
                 )
                 message = response.choices[0].message
-            except openai.BadRequestError:
+            except openai.APIError:
                 message = None
             if message is not None:
                 warn_if_truncated(response, self.name, "judge")
@@ -271,9 +280,15 @@ class Captain:
         """
         numbered = "\n\n".join(f"[{i + 1}]\n{c}" for i, c in enumerate(candidates))
         self._conversation.add_user_message(f"{_SELECT_INSTRUCTION}\n\n{numbered}")
-        response = await _complete_text(
-            self._client, self._model, self._conversation.messages, **self._gen_params
-        )
+        try:
+            response = await _complete_text(
+                self._client, self._model, self._conversation.messages, **self._gen_params
+            )
+        except openai.APIError:
+            # The debate already ran; a final-call failure (timeout, Ollama 5xx) must not lose the
+            # whole computed question. Fall back to the first specialist (the roster anchor).
+            log_decision(self.name, "select", chosen=1, raw="", fallback=True)
+            return 0
         warn_if_truncated(response, self.name, "select")
         message = response.choices[0].message
         index = _parse_choice(message.content or "", len(candidates))

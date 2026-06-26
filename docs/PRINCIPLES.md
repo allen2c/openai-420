@@ -102,6 +102,25 @@ across models (e.g. mistral-small3.2 → 0.15). Diversity comes from epistemolog
 sampling, so a low recommended temperature does not hurt the debate; it only makes runs more
 reproducible. Whatever a comparison varies, these settings are held equal across its arms.
 
+## Law 14 — A result is (accuracy, cost); a bare accuracy number is meaningless
+
+Every run records its cost next to its score — output tokens spent and the **truncation rate**
+(share of answers cut off at `max_completion_tokens`) — in the inference fingerprint, beside the
+Law 13 params. We do not chase a capability ceiling; we report an operating point on the
+accuracy-vs-cost curve.
+
+A system earns its keep only by being **more accurate at an equal token budget** (or as accurate
+at a smaller one). Spending more tokens to win is not a clean win, so any comparison is
+token-budget-matched across its arms — the deciding contrast is the same budget on both sides,
+never a richer budget for the arm we favor.
+
+Truncation invalidates a measurement: a cell whose answers hit `finish_reason == "length"` is
+measuring whether the model *finished in budget*, not whether it can solve the task — flag it,
+and never compare its score as if it were clean. Past the truncation cliff, more reasoning costs
+more and scores less: that is a Pareto-dominated region, not a higher ceiling, and a sweep skips
+configs it already dominates. The portable cost is **tokens**; wall-clock is hardware-specific and
+stays an operational constraint (cap `n`, skip dominated configs), never a law.
+
 ---
 
 <!-- v1 roster (settled, tunable — config, not law): 3 specialists + 1 captain.

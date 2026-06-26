@@ -28,6 +28,10 @@ from openai_420.scratchpad import Scratchpad
 from openai_420.trace import log_decision
 
 DEFAULT_MAX_ROUNDS = 3
+# Local reasoning models (30B+ on Ollama) can take minutes for a single round-3 call; the SDK
+# default timeout cut these off and failed the whole question. Generous on purpose — a slow call
+# is recoverable, a dropped question is not (per-question isolation still bounds a true hang).
+LOCAL_REQUEST_TIMEOUT = 1200.0
 _NEUTRAL_ROLE = "careful problem-solver — judges by the rigor of the reasoning"
 _NEUTRAL_DISPOSITION = (
     "You work the problem yourself with rigor: reason step by step, actively check your own work "
@@ -44,6 +48,7 @@ def build_client(provider: Provider) -> openai.AsyncOpenAI | ThrottledClient:
         base_url=provider.base_url,
         api_key=provider.api_key.get_secret_value(),
         max_retries=0,
+        timeout=LOCAL_REQUEST_TIMEOUT,
     )
     if provider.rpm and provider.tpm:
         return ThrottledClient(raw, RateGovernor(rpm=provider.rpm, tpm=provider.tpm))

@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import httpx
 import openai
 import pytest
 
@@ -163,6 +164,59 @@ async def test_judge_falls_back_and_rewinds_when_the_tool_call_never_comes(monke
     # the failed nudge exchange was rewound: only system, user query, and the round's delta remain
     assert len(messages) == 3
     assert all(m.get("content") != _CONCLUDE_NUDGE for m in messages)
+
+
+def _api_error() -> openai.APIError:
+    """An Ollama-style transport failure (500 'error parsing tool call' / timeout) — any
+    openai.APIError; APITimeoutError is the cheapest to construct."""
+    return openai.APITimeoutError(request=httpx.Request("POST", "http://localhost:11434"))
+
+
+@pytest.mark.asyncio
+async def test_judge_degrades_on_api_error_then_succeeds(monkeypatch):
+    captain = _captain()
+    steps = iter([_api_error(), _tool_response('{"consensus": true}')])
+
+    async def fake_create(**kwargs):
+        step = next(steps)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+    monkeypatch.setattr(captain._client.chat.completions, "create", fake_create)
+
+    conclusion = await captain.judge(_board_with_one_answer(), round=1)
+
+    assert conclusion == Conclusion(consensus=True, direction=None)
+
+
+@pytest.mark.asyncio
+async def test_judge_falls_back_and_rewinds_when_api_errors_persist(monkeypatch):
+    captain = _captain()
+
+    async def fake_create(**kwargs):
+        raise _api_error()
+
+    monkeypatch.setattr(captain._client.chat.completions, "create", fake_create)
+
+    conclusion = await captain.judge(_board_with_one_answer(), round=1)
+
+    assert conclusion == Conclusion(consensus=False, direction=_FALLBACK_DIRECTION)
+    assert len(captain._conversation.messages) == 3  # nudge exchange rewound
+
+
+@pytest.mark.asyncio
+async def test_select_degrades_to_anchor_on_api_error(monkeypatch):
+    captain = _captain()
+
+    async def fake_create(**kwargs):
+        raise _api_error()
+
+    monkeypatch.setattr(captain._client.chat.completions, "create", fake_create)
+
+    index = await captain.select(["answer A", "answer B", "answer C"])
+
+    assert index == 0  # a final-call failure falls back to the anchor, never crashes the question
 
 
 def test_extract_answer_takes_text_after_the_marker():

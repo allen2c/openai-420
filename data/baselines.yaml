@@ -85,3 +85,53 @@ v0.0.3:
     result is the deliverable. Shipped alongside: client-side rate governor (ThrottledClient,
     OPENAI_RPM/TPM) + per-question failure isolation, after the token-heavy tool arm crashed a full
     run on a 429.
+
+v0.0.4:
+  date: 2026-06-26
+  code_version: 3a84159   # scripts/benchmarks/sweep.py (local-roster effort profile driver)
+  kind: single-model effort×dataset PROFILE (not a framework comparison) — the groundwork bars the
+        heterogeneous framework must beat. Each cell is --system single on local Ollama.
+  inference:
+    provider: ollama
+    params: { max_completion_tokens: 32768 }   # per-model temperature/top_p pinned (see .env.example)
+  sample: { scheme: stratified, seed: 0 }       # aime n=90 (full), gpqa n=100, math500 n=100
+  repeats: 1
+
+  # acc per (model, effort); `trunc` = answers cut off at 32k (finish_reason=length) — a Law 14
+  # cost/validity flag: a high-trunc cell is NOT a clean capability number. mistral has no reasoning
+  # channel (effort N/A, rejects the param); gpt-oss IGNORES effort=none (still reasons).
+  profile:
+    aime:        # n=90
+      gpt-oss:20b:          { none: 0.722, none_trunc: 19, low: 0.433, medium: 0.711, medium_trunc: 7 }
+      nemotron-3-nano:30b:  { none: 0.044, low: 0.500, low_trunc: 44, medium: 0.544, medium_trunc: 41 }
+      qwen3.6:35b:          { none: 0.744, low: 0.478, low_trunc: 47, medium: 0.478, medium_trunc: 47 }
+      mistral-small3.2:     { none: 0.244 }   # no-reasoning chat model
+    gpqa_diamond:  # n=100
+      gpt-oss:20b:          { none: 0.680, low: 0.500, medium: 0.720 }
+      nemotron-3-nano:30b:  { none: 0.370, low: 0.430, low_trunc: 39, medium: 0.420, medium_trunc: 38 }
+      qwen3.6:35b:          { none: 0.740, low: 0.760, low_trunc: 7, medium: 0.750, medium_trunc: 6 }
+      mistral-small3.2:     { none: 0.500 }
+    math500:  # n=100
+      gpt-oss:20b:          { none: 0.970, low: 0.900, medium: 0.950 }
+      nemotron-3-nano:30b:  { none: 0.510, low: 0.960, medium: 0.960 }
+      qwen3.6:35b:          { none: 0.980, low: 0.990, medium: 0.950, medium_trunc: 4 }
+      mistral-small3.2:     { none: 0.870 }
+
+  # The single-model bar the framework must beat, per dataset (strongest model @ its best effort):
+  bars:
+    aime:         { model: qwen3.6:35b, effort: none, acc: 0.744 }
+    gpqa_diamond: { model: qwen3.6:35b, effort: low,  acc: 0.760 }
+    math500:      { model: qwen3.6:35b, effort: low,  acc: 0.990 }   # saturated
+
+  notes: >
+    Local 4-model × 3-dataset × {none,low,medium} effort profile (~71h wall-clock). qwen3.6 is the
+    strongest single model on ALL three datasets — the roster anchor. HEADLINE (Law 14): turning
+    reasoning ON self-truncates at 32k on hard sets — qwen aime low/medium = 47/90 answers cut off
+    (52%), collapsing it to 47.8% vs none's 74.4%; nemotron aime/gpqa low/medium ~40% truncated.
+    So `none` (the model reasoning in the content channel, no truncation) often WINS on hard sets,
+    empirically validating "specialists argue in content anyway, why max internal reasoning."
+    Effort sweet spot is PER-MODEL (qwen→none, gpt-oss→none/medium, nemotron→medium-but-weak,
+    mistral fixed) — pin each via OPENAI_PROVIDERS. high effort excluded (dominated: more truncation
+    for fewer points). math500 saturated (0.95–0.99). nemotron-3-nano is the weakest member and most
+    truncation-prone (drop-or-medium candidate). Next: heterogeneous_consensus with each provider at
+    its sweet spot, token-budget-matched vs the qwen bar.
